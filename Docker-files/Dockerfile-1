@@ -1,0 +1,107 @@
+# Dockerfile for OnCORSeq Phase 1 based on CentOS:7.4.1708
+FROM ipm-dc-dtr.weill.cornell.edu/ipm/centos@sha256:e293d7f780711627202b9d764e05d5116209cccf98e6d2610755973f77b74fe9
+#===============================#
+# Docker Image Configuration	#
+#===============================#
+LABEL Description="OnCORSeq Phase 1" \
+		Vendor="Englander Institute for Precision Medicine" \
+		maintainer="sir2013@med.cornell.edu" \
+		base_image="ipm-dc-dtr.weill.cornell.edu/ipm/centos" \
+		base_image_version="7.4.1708.patched20190401" \
+		base_image_SHA256="sha256:e293d7f780711627202b9d764e05d5116209cccf98e6d2610755973f77b74fe9"
+
+ENV APP_NAME='phase01' \
+	TZ='US/Eastern' \
+	PROGRAMS="opt"
+#===========================#
+# CentOS Preparation        #
+#===========================#
+RUN yum groupinstall -y "Development Tools" && yum install -y \
+	git \
+	wget \
+	tar \
+	curl \
+	gcc \
+	gcc-c++ \
+	openssl-devel \
+	zip \
+	unzip \
+	make \
+	mkdir \
+	cmake \
+	which \
+	readline-devel \
+	libX11-devel \
+	libXt-devel \
+	cairo-devel \
+	libjpeg-devel \
+	pango-devel \
+	dejavu* \
+	iptables-services \
+	systemctl \
+	ssmtp \
+	msmtp \
+	httpd \
+	ca-certificates \
+	poppler-utils \
+	emacs \
+	&& yum -y clean all
+#===========================#
+
+#===========================#
+# Pipeline Configuration    #
+#===========================#
+WORKDIR /${PROGRAMS}
+
+RUN mkdir -p /${APP_NAME}/scripts \
+    && mkdir -p /${APP_NAME}/logs \
+    && mkdir -p /${APP_NAME}/OnCORSeq_phase2_results \
+    && mkdir -p /${APP_NAME}/OnCORSeq_phase1_results \
+    && mkdir -p /${APP_NAME}/tmp_dir \
+    && mkdir -p /${APP_NAME}/resources 
+
+#===========================#
+# Install Python 2.7.13     #
+#===========================#
+RUN wget https://www.python.org/ftp/python/2.7.13/Python-2.7.13.tgz \
+    && tar xzf /${PROGRAMS}/Python-2.7.13.tgz \
+    && cd /${PROGRAMS}/Python-2.7.13 \
+    && ./configure \
+    && make \
+    && make install
+
+RUN curl "https://bootstrap.pypa.io/get-pip.py" -o "get-pip.py"
+RUN python /${PROGRAMS}/get-pip.py
+
+RUN pip install reportlab==3.4.0 \
+    && pip install xlrd==1.1.0 \
+    && pip install xlsxwriter==0.9.8 \
+    && pip install numpy==1.8.0
+
+#===========================#
+# Install Bedtools 2.25.0   #
+#===========================#
+ENV BEDTOOLS_VERSION 2.25.0
+RUN wget https://github.com/arq5x/bedtools2/releases/download/v${BEDTOOLS_VERSION}/bedtools-${BEDTOOLS_VERSION}.tar.gz \
+	&& tar -zxvf /${PROGRAMS}/bedtools-${BEDTOOLS_VERSION}.tar.gz \
+	&& cd /${PROGRAMS}/bedtools2 \
+	&& make
+
+ENV PATH /${PROGRAMS}/bedtools2/bin:/${PROGRAMS}/bedtools2/shims:$PATH
+#===========================#
+# Install Samtools 0.1.19   #
+#===========================#
+ENV SAMTOOLS_VERSION 0.1.19
+RUN wget --no-check-certificate https://sourceforge.net/projects/samtools/files/samtools/${SAMTOOLS_VERSION}/samtools-${SAMTOOLS_VERSION}.tar.bz2 \
+	&& tar xvjf /${PROGRAMS}/samtools-${SAMTOOLS_VERSION}.tar.bz2 \
+	&& cd /${PROGRAMS}/samtools-${SAMTOOLS_VERSION} \
+	&& make
+
+ENV PATH /${PROGRAMS}/samtools-${SAMTOOLS_VERSION}:/${PROGRAMS}/samtools-${SAMTOOLS_VERSION}:$PATH
+#===================================#
+# Copy Files and set work directory	#
+#===================================#
+WORKDIR /${APP_NAME}
+COPY scripts /${APP_NAME}/scripts/
+
+CMD cd /${APP_NAME}/OnCORSeq_phase2_results && /${APP_NAME}/scripts/OnCORSeq.sh -r ${RUNID}

@@ -1,0 +1,86 @@
+# Dockerfile for Oncomine Annotation Module (Phase 3) based on CentOS:7.6.1810
+FROM ipm-dc-dtr.weill.cornell.edu/ipm/centos@sha256:7c2df531c99880ec40f65afeeaba460e52ba1af0527d18ebdcfaa0c6e2113afe
+
+#===============================#
+# Docker Image Configuration	#
+#===============================#
+
+LABEL Description='OnCORSeq Phase 3' \
+	Vendor='Englander Institute for Precision Medicine' \
+	maintainer='sir2013@med.cornell.edu' \
+	base_image='ipm-dc-dtr.weill.cornell.edu/ipm/centos' \
+	base_image_version='7.6.1810.patched20191001' \
+	base_image_SHA256='sha256:7c2df531c99880ec40f65afeeaba460e52ba1af0527d18ebdcfaa0c6e2113afe'
+
+ENV APP_NAME='phase03' \
+	TZ='US/Eastern' \
+	PROGRAMS='opt'
+
+#===========================#
+# CentOS Preparation        #
+#===========================#
+
+RUN yum groupinstall -y "Development Tools" && yum install -y \
+		wget \
+		tar \
+		curl \
+		gcc \
+		gcc-c++ \
+		openssl-devel \
+		zip \
+		unzip \
+		make \
+		mkdir \
+		cmake \
+		which \
+		readline-devel \
+		libX11-devel \
+		libXt-devel \
+		dejavu* \
+	&& yum -y clean all
+
+#===========================#
+
+#===========================#
+# Pipeline Configuration    #
+#===========================#
+
+WORKDIR /${PROGRAMS}
+
+RUN mkdir -p /${APP_NAME}/scripts \
+	&& mkdir /${APP_NAME}/reports
+
+COPY scripts /${APP_NAME}/scripts/
+COPY opt /${PROGRAMS}/
+
+#=================================#
+# Install Python 2.7.13 & Pip     #
+#=================================#
+
+ENV PYTHON_VERSION 2.7.13
+RUN tar xzf Python-${PYTHON_VERSION}.tgz \
+    && cd Python-${PYTHON_VERSION} \
+    && ./configure \
+    && make \
+    && make install \
+    && python /${PROGRAMS}/get-pip.py
+
+#===========================#
+# Install Python Modules    #
+#===========================#
+
+RUN pip install reportlab==3.5.18 \
+    && pip install xlrd==1.1.0 \
+	&& pip install requests==2.20.1
+
+#===================================#
+# Set working directory             #
+#===================================#
+
+WORKDIR /${APP_NAME}
+
+#===================================#
+# Startup                           #
+#===================================#
+
+CMD python2 /${APP_NAME}/scripts/spreadsheet2pdf.py

@@ -1,0 +1,1443 @@
+---
+title: "ccRCC Survival"
+date: "`r Sys.Date()`"
+output: 
+  rmarkdown::html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: default
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,message=FALSE)
+```
+
+```{r, warning=FALSE, message=FALSE, results='hide', echo=FALSE}
+library(ggplot2, quietly = T)
+library(survival, quietly = T)
+library(survminer, quietly = T)
+library(survMisc, quietly=T)
+#library(GenomicRanges, quietly=T)
+#library(BSgenome.Hsapiens.1000genomes.hs37d5, quietly=T)
+#library(pheatmap, quietly=T)
+#library(reshape2, quietly=T)
+#library(pander, quietly=T)
+#library(deconstructSigs, quietly = T)
+
+#data.loc = "./"
+
+#orig.wd = getwd()
+#setwd("~/rcc_data")
+#res = system("git pull", intern=T)
+#rda.loc = paste0(data.loc,"rcc_data/r-objects/rcc_clinical_data.Rda")
+load(file = "rcc_data/r-objects/rcc_clinical_data.Rda")
+
+source("survivalHelperFunctions.R")
+
+#rcc.maf.file = paste0(data.loc, "rcc_data/mafs/eipm_rcc.clonet_corrected.maf")
+rcc.maf = read.table("rcc_data/mafs/eipm_rcc.clonet_corrected.maf", sep="\t", header=T, quote="", stringsAsFactors = F)
+
+```
+
+
+
+```{r}
+
+#Change days to months
+date.cols = grep("PFS", colnames(clinical.data))
+date.cols = c(date.cols, grep("OS", colnames(clinical.data)))
+date.cols = c(date.cols, grep("date",colnames(clinical.data)))
+clinical.data[,date.cols] = clinical.data[,date.cols]/30.5
+
+#Calculate PFS for treatment lines
+trt.starts = grep("date\\.start",colnames(clinical.data))
+trt.stops = grep("progressive\\.disease", colnames(clinical.data))
+clinical.data$first.line.pfs = clinical.data[,trt.stops[1]] - clinical.data[,trt.starts[1]]
+clinical.data$second.line.pfs = clinical.data[,trt.stops[2]] - clinical.data[,trt.starts[2]]
+clinical.data$third.line.pfs = clinical.data[,trt.stops[3]] - clinical.data[,trt.starts[3]]
+clinical.data$additional.pfs = clinical.data[,trt.stops[4]] - clinical.data[,trt.starts[4]]
+
+#Remove organoids and xenografts
+clinical.data.save = clinical.data
+clinical.data = clinical.data[-which(clinical.data$primary.tumor %in% c("ORG", "PDX")),]
+
+#Reduce to patient level based on latest sampling date
+clinical.data.samples = clinical.data
+clinical.data = c()
+for(curr in unique(clinical.data.samples$PMID)){
+  curr.rows = clinical.data.samples[which(clinical.data.samples$PMID == curr),]
+  max.row = curr.rows[which.max(curr.rows$sampling.date)[1],]
+  clinical.data = as.data.frame(rbind(clinical.data, max.row), stringsAsFactors=F)
+}
+
+```
+
+```{r}
+#Add in TMB from clonet corrected MAF
+seq.size = 36.96568
+corrected.tmb = data.frame(sample.ID = unique(rcc.maf$Tumor_Sample_Barcode), TMB.Corrected = 0)
+for(i in 1:dim(corrected.tmb)[1]){
+  curr = corrected.tmb$sample.ID[i]
+  corrected.tmb$TMB.Corrected[i] = sum(((1+rcc.maf$End_position[which(rcc.maf$Tumor_Sample_Barcode == curr)]) - rcc.maf$Start_position[which(rcc.maf$Tumor_Sample_Barcode == curr)]))
+}
+corrected.tmb$TMB.Corrected = as.numeric(corrected.tmb$TMB.Corrected)/seq.size
+
+#Determine TMB Status
+corrected.tmb$TMB.status = "TMB Low"
+tmb.cutoff = mean(corrected.tmb$TMB.Corrected) + 1.25*IQR(corrected.tmb$TMB.Corrected)
+corrected.tmb$TMB.status[which(corrected.tmb$TMB.Corrected >= tmb.cutoff)] = "TMB High"
+
+clinical.data = merge(clinical.data, corrected.tmb, by="sample.ID", all.x = T)
+clinical.data.samples = merge(clinical.data.samples, corrected.tmb, by = "sample.ID", all.x=T)
+
+```
+
+#Patient Selection
+Biopsies were selected for each patient by selecting the most recent sample.
+
+#Tumor vs Mets OS/PFS
+##OS
+```{r,fig.height=8.5,fig.width=9}
+customSurvival(clinical.data, "primary.tumor", "OS.dx","vital.status","dead")
+```
+
+```{r}
+customForest(clinical.data, c("primary.tumor"),"OS.dx","vital.status","dead")
+```
+
+##PFS
+```{r,fig.height=8.5,fig.width=9}
+clinical.data$PFS.status = "progressed"
+customSurvival(clinical.data, "primary.tumor", "first.line.pfs","PFS.status","progressed")
+```
+
+```{r}
+customForest(clinical.data, c("primary.tumor","TMB.status"),"first.line.pfs","PFS.status","progressed")
+```
+
+#PFS and OS by Risk Factor - VEGF
+##OS - Dx {.tabset}
+
+```{r,results='asis',fig.height=8.5,fig.width=9}
+risk.factors = c("Tx.prior.to.sampling","hypertension","diabetes.mellitus","BMI.30","former.smoker","TMB.status", "TMB.Corrected")
+clinical.vegf = clinical.data[-which(is.na(clinical.data$`best.PFS.VEGF-TT`)),]
+colnames(clinical.vegf)[which(colnames(clinical.vegf) == "BMI>30")] = "BMI.30"
+for(curr in risk.factors){
+  cat(paste0("\n\n### ",curr," {.tabset} \n\n"))
+  cat("\n\n#### Survival \n\n")
+  if(!curr == "TMB.Corrected"){
+    print(customSurvival(clinical.vegf, curr, "OS.dx","vital.status","dead",title = paste0("OS (Dx) by ",curr)))
+  }
+  cat("\n\n")
+  cat("\n\n#### Regression \n\n")
+  customForest(clinical.vegf, c(curr),"OS.dx","vital.status","dead",title = paste0("OS (Dx) by ",curr))
+  cat("\n\n")
+}
+
+```
+
+##OS - Met {.tabset}
+```{r,results='asis',fig.height=8.5,fig.width=9}
+for(curr in risk.factors){
+  cat(paste0("\n\n### ",curr," {.tabset} \n\n"))
+  cat("\n\n#### Survival \n\n")
+  if(!curr == "TMB.Corrected"){
+    print(customSurvival(clinical.vegf, curr, "OS.met","vital.status","dead",title = paste0("OS (Met) by ",curr)))
+  }
+  cat("\n\n")
+  cat("\n\n#### Regression \n\n")
+  customForest(clinical.vegf, c(curr),"OS.met","vital.status","dead",title = paste0("OS (Met) by ",curr))
+  cat("\n\n")
+}
+
+```
+
+##PFS {.tabset}
+```{r,results='asis',fig.height=8.5,fig.width=9}
+for(curr in risk.factors){
+  cat(paste0("\n\n### ",curr," {.tabset} \n\n"))
+  cat("\n\n#### Survival \n\n")
+  if(!curr == "TMB.Corrected"){
+    print(customSurvival(clinical.vegf, curr, "best.PFS.VEGF-TT","PFS.status","progressed",title = paste0("PFS by ",curr)))
+  }
+  cat("\n\n")
+  cat("\n\n#### Regression \n\n")
+  customForest(clinical.vegf, c(curr),"best.PFS.VEGF-TT","PFS.status","progressed",title = paste0("PFS by ",curr))
+  cat("\n\n")
+}
+
+```
+
+#PFS and OS by Risk Factor - ICI
+##OS - Dx {.tabset}
+
+```{r,results='asis',fig.height=8.5,fig.width=9}
+risk.factors = c("Tx.prior.to.sampling","hypertension","diabetes.mellitus","BMI.30","former.smoker","TMB.status", "TMB.Corrected")
+clinical.ici = clinical.data[-which(is.na(clinical.data$best.PFS.immunotherapy)),]
+colnames(clinical.ici)[which(colnames(clinical.ici) == "BMI>30")] = "BMI.30"
+for(curr in risk.factors){
+  cat(paste0("\n\n### ",curr," {.tabset} \n\n"))
+  cat("\n\n#### Survival \n\n")
+  if(!curr == "TMB.Corrected"){
+    print(customSurvival(clinical.ici, curr, "OS.dx","vital.status","dead",title = paste0("OS (Dx) by ",curr)))
+  }
+  cat("\n\n")
+  cat("\n\n#### Regression \n\n")
+  customForest(clinical.ici, c(curr),"OS.dx","vital.status","dead",title = paste0("OS (Dx) by ",curr))
+  cat("\n\n")
+}
+
+```
+
+##OS - Met {.tabset}
+```{r,results='asis',fig.height=8.5,fig.width=9}
+for(curr in risk.factors){
+  cat(paste0("\n\n### ",curr," {.tabset} \n\n"))
+  cat("\n\n#### Survival \n\n")
+  if(!curr == "TMB.Corrected"){
+    print(customSurvival(clinical.ici, curr, "OS.met","vital.status","dead",title = paste0("OS (Met) by ",curr)))
+  }
+  cat("\n\n")
+  cat("\n\n#### Regression \n\n")
+  customForest(clinical.ici, c(curr),"OS.met","vital.status","dead",title = paste0("OS (Met) by ",curr))
+  cat("\n\n")
+}
+
+```
+
+##PFS {.tabset}
+```{r,results='asis',fig.height=8.5,fig.width=9}
+for(curr in risk.factors){
+  cat(paste0("\n\n### ",curr," {.tabset} \n\n"))
+  cat("\n\n#### Survival \n\n")
+  if(!curr == "TMB.Corrected"){
+    print(customSurvival(clinical.ici, curr, "best.PFS.immunotherapy","PFS.status","progressed",title = paste0("PFS by ",curr)))
+  }
+  cat("\n\n")
+  cat("\n\n#### Regression \n\n")
+  customForest(clinical.ici, c(curr),"best.PFS.immunotherapy","PFS.status","progressed",title = paste0("PFS by ",curr))
+  cat("\n\n")
+}
+
+```
+
+#TMB (Corrected)
+
+##Distribution
+```{r}
+#It looks like the clinical data isn't on the patient level anymore.
+#Go through the set up and check this again i guess
+ggplot(clinical.data,aes(TMB.Corrected)) + geom_histogram() + ggtitle("Corrected TMB")
+ggplot(clinical.data,aes(log10(TMB.Corrected))) + geom_histogram()+ ggtitle("log10 Corrected TMB")
+
+```
+
+##Distribution by Clinical Factors {.tabset}
+```{r, results='asis'}
+for(curr in risk.factors){
+  if(curr %in% c("TMB.status","TMB.Corrected")){
+    next
+  }
+  if(curr == "BMI.30"){
+    curr = "BMI>30"
+  }
+  cat(paste0("\n\n### ",curr,"\n\n"))
+  clin.tmp = clinical.data[,c("sample.ID","TMB.Corrected",curr)]
+  colnames(clin.tmp)[3] = "curr"
+  plt = ggplot(clin.tmp, aes(curr, log10(TMB.Corrected), fill = curr)) + geom_boxplot(alpha=0.7) + 
+    stat_compare_means() + xlab(curr) + guides(fill=F)
+  print(plt)
+  cat("\n\n")
+  
+  
+  if(curr == "Tx.prior.to.sampling"){
+    plt = ggplot(clin.tmp, aes(curr, log10(TMB.Corrected), fill = curr)) + theme_bw() + geom_boxplot(alpha=0.7) + 
+      stat_compare_means() + xlab("Sampled After Treatment") + guides(fill=F) + ggtitle("TMB for ccRCC Patients by Treatment Prior to Sampling") + 
+      ylab(bquote("log"[10]*" TMB"))
+    ggsave(plt, file="~/Documents/ccRCC/tmb_trt.png")
+  }
+  
+  
+}
+
+```
+
+##PFS by Continuous TMB {.tabset}
+
+###VEGF
+```{r}
+customForest(clinical.vegf, c("TMB.Corrected"),"best.PFS.VEGF-TT","PFS.status","progressed",title = paste0("PFS by ",curr))
+```
+
+###Immunotherapy
+```{r}
+customForest(clinical.ici, c("TMB.Corrected"),"best.PFS.immunotherapy","PFS.status","progressed",title = paste0("PFS by ",curr))
+```
+
+
+#```{r}
+#Need to change this to load from the git repo for consistnency 
+#load("~/Documents/ccRCC/haloplex_context.Rda")
+#```
+
+<!-- #Mutational Signatures - General {.tabset} -->
+<!-- ##deconstructSigs -->
+<!-- ```{r} -->
+<!-- clear.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID),] -->
+<!-- maf.cbio = read.delim("/Users/emf2009/Documents/cBio_data/cbio-data-new-deployment/EIPM_RCC/data_mutation_extended.txt", sep="\t", header=T, quote="", stringsAsFactors = F) -->
+<!-- maf.cbio = maf.cbio[which(maf.cbio$Tumor_Sample_Barcode %in% clear.maf$Tumor_Sample_Barcode),] -->
+
+<!-- weights = deconstructSigsWeights(clear.maf, ref.context = haloplex.context) -->
+<!-- pheatmap(weights, show_colnames = F, main = "Corrected MAF") -->
+
+<!-- weights.cbio = deconstructSigsWeights(maf.cbio, ref.context = haloplex.context) -->
+<!-- pheatmap(weights.cbio, show_colnames = F, main = "cBio MAF") -->
+
+<!-- ``` -->
+
+<!-- ##Bayes -->
+<!-- ```{r} -->
+<!-- bayes.res = hush(bayesDeNovo(clear.maf, ref.context = haloplex.context)) -->
+<!-- #bayes.res$Plot -->
+<!-- plotDeNovoSimilarity(bayes.res$Signatures, title = "Corrected MAF") -->
+<!-- plotDeNovoSimilarity(bayes.res$Signatures, cutoff = 0.8, title = "Corrected MAF") -->
+
+<!-- bayes.cbio = hush(bayesDeNovo(maf.cbio, ref.context = haloplex.context)) -->
+<!-- plotDeNovoSimilarity(bayes.cbio$Signatures, title = "cBio MAF") -->
+<!-- plotDeNovoSimilarity(bayes.cbio$Signatures, cutoff = 0.8, title = "cBio MAF") -->
+
+<!-- pheatmap(bayes.res$Contributions, show_colnames = F, main="Corrected MAF Contributions") -->
+<!-- pheatmap(bayes.cbio$Contributions, show_colnames = F, main = "cBio MAF Contributions") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- #So for the corrected, check sig C -->
+<!-- ##For cbio check sig A -->
+
+<!-- #looks like very little 17 p/q del for the samples -->
+<!-- chr17.del = read.delim("~/Downloads/sig_8_samples_deletion_fraction_binary.txt", sep="\t", header=T, quote="", stringsAsFactors = F) -->
+<!-- colnames(chr17.del)[1] = "Sample_ID" -->
+<!-- #Check HRD -->
+<!-- hrd.scores = read.table("/Users/emf2009/Documents/Exploration/data/EIPM.scar_scores.20190115.txt", sep="\t", header=T, quote="", stringsAsFactors=F) -->
+<!-- #length(which(hrd.scores$Sample_ID %in% clear.maf$Tumor_Sample_Barcode)) -->
+<!-- #Check smoking history -->
+<!-- smoke.data = clinical.data[,c("sample.ID","former.smoker")] -->
+<!-- colnames(smoke.data)[1] = "Sample_ID" -->
+
+<!-- curr.anno = merge(smoke.data, hrd.scores) -->
+<!-- curr.anno = merge(curr.anno, chr17.del) -->
+<!-- curr.anno = curr.anno[which(curr.anno$Sample_ID %in% colnames(bayes.res$Contributions)),] -->
+
+<!-- tmp.cont = bayes.res$Contributions[,which(colnames(bayes.res$Contributions) %in% curr.anno$Sample_ID)] -->
+<!-- tmp.con.unc = bayes.cbio$Contributions[,which(colnames(bayes.cbio$Contributions) %in% curr.anno$Sample_ID)] -->
+
+<!-- rownames(curr.anno) = curr.anno$Sample_ID -->
+<!-- curr.anno = curr.anno[,c("former.smoker", "HRD.sum","X17p", "X17q")] -->
+<!-- curr.anno$HRD.dichot = "Low" -->
+<!-- curr.anno$HRD.dichot[which(curr.anno$HRD.sum >= 20)] = "High" -->
+<!-- pheatmap(tmp.cont, show_colnames = F ,annotation_col = curr.anno, main = "Corrected") -->
+
+<!-- pheatmap(tmp.con.unc, show_colnames = F ,annotation_col = curr.anno, main = "Uncorrected") -->
+<!-- ``` -->
+
+
+
+
+
+
+<!-- #Mutational Signatures - Sampling before/after treatment {.tabset} -->
+<!-- ##deconstructSigs -->
+<!-- ```{r, fig.height=7, fig.width=10} -->
+<!-- custom.bsg = BSgenome.Hsapiens.1000genomes.hs37d5 -->
+<!-- seqnames(custom.bsg)[1:25] = paste0("chr",seqnames(custom.bsg)[1:25]) -->
+<!-- clear.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID),] -->
+<!-- samp.anno = clinical.data[,c("sample.ID", "Tx.prior.to.sampling")] -->
+<!-- rownames(samp.anno) = samp.anno$sample.ID -->
+<!-- samp.anno = samp.anno[,-1, drop=F] -->
+
+<!-- curr.weights = deconstructSigsWeights(clear.maf,custom.bsg, ref.context = haloplex.context) -->
+
+<!-- pheatmap(curr.weights, annotation_col = samp.anno, show_colnames = F, main="deconstructSigs") -->
+
+<!-- trt.weights = curr.weights[,which(colnames(curr.weights) %in% rownames(samp.anno)[which(samp.anno$Tx.prior.to.sampling == "Y")])] -->
+<!-- pheatmap(trt.weights, show_colnames = F, main="Prior Treatment") -->
+
+<!-- trt.weights = curr.weights[,which(colnames(curr.weights) %in% rownames(samp.anno)[which(samp.anno$Tx.prior.to.sampling == "N")])] -->
+<!-- pheatmap(trt.weights, show_colnames = F, main="No Prior Treatment") -->
+
+<!-- ``` -->
+
+<!-- ##Boxplots -->
+<!-- ```{r,  fig.height=7, fig.width=12} -->
+<!-- sig.weights = as.data.frame(t(curr.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$Prior.Trt = "No" -->
+<!-- sig.weights$Prior.Trt[which(sig.weights$sample.ID %in% rownames(samp.anno)[which(samp.anno$Tx.prior.to.sampling == "Y")])] = "Yes" -->
+<!-- sig.weights = melt(sig.weights, id.cols = c("sample.ID","Prior.Trt")) -->
+<!-- colnames(sig.weights)[3:4] = c("Signature", "Contribution") -->
+
+<!-- plt = ggplot(sig.weights, aes(Signature, Contribution, fill = Prior.Trt, color=Prior.Trt)) + geom_boxplot(outlier.color = NA, fill = "white",alpha=0.5) + -->
+<!--   theme_bw()  + theme(axis.text.x = element_text(angle=45,hjust=1), text = element_text(size=14)) + -->
+<!--   geom_point(alpha=0.5, position = position_jitterdodge(dodge.width = 0.95)) + guides(color = guide_legend(title="Sampled after Treatment"), fill=F) -->
+<!-- plt = plt  + ggtitle("Contribution of COSMIC Mutational Signatures in EIPM ccRCC Patients") -->
+<!-- print(plt) -->
+
+<!-- ggsave(plt, file = "~/Documents/ccRCC/treatment_signatures.jpg", height = 7, width=11) -->
+
+<!-- sigs = data.frame(Signature = unique(sig.weights$Signature), Signif = 0) -->
+
+<!-- for(i in 1:dim(sigs)[1]){ -->
+<!--   grp1 = sig.weights[which(sig.weights$Prior.Trt == "No" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   grp2 = sig.weights[which(sig.weights$Prior.Trt == "Yes" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   wilcox.res = wilcox.test(grp1, grp2) -->
+<!--   sigs$Signif[i] = round(wilcox.res$p.value, 3) -->
+<!-- } -->
+<!-- library(data.table, quietly=T) -->
+<!-- sigs = sigs[order(sigs$Signif,decreasing = F),] -->
+
+<!-- data.table(sigs) -->
+<!-- ``` -->
+
+
+<!-- ##Logistic Regression {.tabset} -->
+<!-- ```{r, results='asis'} -->
+<!-- sig.weights = as.data.frame(t(curr.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$Prior.Trt = "No" -->
+<!-- sig.weights$Prior.Trt[which(sig.weights$sample.ID %in% rownames(samp.anno)[which(samp.anno$Tx.prior.to.sampling == "Y")])] = "Yes" -->
+<!-- sig.weights$Prior.Trt = as.factor(sig.weights$Prior.Trt) -->
+<!-- sig.weights$Prior.Trt = relevel(sig.weights$Prior.Trt, ref = "No") -->
+
+<!-- panderOptions('knitr.auto.asis',FALSE) -->
+<!-- for(curr in colnames(sig.weights)){ -->
+<!--   if(curr %in% c("sample.ID", "Prior.Trt")){ -->
+<!--     next -->
+<!--   } -->
+<!--   cat(paste0("\n\n### ", curr, "\n\n")) -->
+<!--   sub.weight = sig.weights[,c("Prior.Trt", curr)] -->
+<!--   curr.model = glm(Prior.Trt ~ ., data = sub.weight, family = binomial(link="logit")) -->
+<!--   pander(curr.model) -->
+<!--   cat("\n\n") -->
+<!-- } -->
+
+<!-- ``` -->
+
+<!-- ##De Novo - NMF {.tabset} -->
+<!-- ###Collected Before Treatment -->
+<!-- ```{r} -->
+<!-- #Correct de novo for ref context -->
+<!-- library(philentropy, quietly=T) -->
+<!-- before.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID[which(clinical.data$Tx.prior.to.sampling == "N")]),] -->
+
+<!-- before.denovo = deNovoSigs(before.maf, nrun=5, ref.context = haloplex.context) -->
+<!-- before.denovo$Plot.Norm + ggtitle("Sampled Before Treatment") -->
+
+
+<!-- pheatmap(before.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(before.denovo$Signatures, title="RCC Pre Treatment") -->
+<!-- plotDeNovoSimilarity(before.denovo$Signatures, title="RCC Pre Treatment", cutoff = 0.8) -->
+
+<!-- ``` -->
+
+
+<!-- ###Collected After Treatment -->
+<!-- ```{r} -->
+<!-- after.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID[which(clinical.data$Tx.prior.to.sampling == "Y")]),] -->
+<!-- after.denovo = deNovoSigs(after.maf, nrun=5, ref.context = haloplex.context) -->
+
+<!-- after.denovo$Plot.Norm + ggtitle("Sampled After Treatment") -->
+
+<!-- pheatmap(after.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(after.denovo$Signatures, title="Sampled After Treatment") -->
+<!-- plotDeNovoSimilarity(after.denovo$Signatures, title="Sampled After Treatment", cutoff = 0.8) -->
+<!-- ``` -->
+
+
+<!-- ##De Novo - BayesNMF {.tabset} -->
+<!-- ###Collected Before Treatment -->
+<!-- ```{r} -->
+<!-- #Correct de novo for ref context -->
+<!-- before.denovo = hush(bayesDeNovo(before.maf, ref.context = haloplex.context)) -->
+<!-- #before.denovo = deNovoSigs(before.maf, nrun=5, ref.context = haloplex.context) -->
+<!-- before.denovo$Plot + ggtitle("Sampled Before Treatment") -->
+
+
+<!-- pheatmap(before.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(before.denovo$Signatures, title="RCC Pre Treatment") -->
+<!-- plotDeNovoSimilarity(before.denovo$Signatures, title="RCC Pre Treatment", cutoff = 0.7) -->
+<!-- #Investigate signature B clinically -->
+<!-- ##Try to add into COSMIC and see what happens -->
+<!-- ``` -->
+
+
+<!-- ###Collected After Treatment -->
+<!-- ```{r} -->
+<!-- after.denovo = hush(bayesDeNovo(after.maf, ref.context = haloplex.context)) -->
+<!-- after.denovo$Plot + ggtitle("Sampled After Treatment") -->
+
+<!-- pheatmap(after.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(after.denovo$Signatures, title="RCC Post Treatment") -->
+<!-- plotDeNovoSimilarity(after.denovo$Signatures, title="RCC Post Treatment", cutoff = 0.75) -->
+<!-- ``` -->
+
+
+
+
+<!-- #Mutational Signatures - VEGF Extreme Responders {.tabset} -->
+<!-- ##deconstructSigs -->
+<!-- ```{r, fig.height=7, fig.width=10} -->
+<!-- clinical.vegf$PFS.group = "mid" -->
+<!-- clinical.vegf$PFS.group[which(clinical.vegf$`best.PFS.VEGF-TT` < 6)] = "<6" -->
+<!-- clinical.vegf$PFS.group[which(clinical.vegf$`best.PFS.VEGF-TT` > 12)] = ">12" -->
+
+
+<!-- tmp = clinical.vegf[which(clinical.vegf$sample.ID %in% unique(rcc.maf$Tumor_Sample_Barcode)),] -->
+
+
+<!-- surv.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group %in% c("<6",">12"))]),] -->
+
+<!-- anno.data = clinical.vegf[,c("sample.ID","PFS.group")] -->
+<!-- rownames(anno.data) = anno.data$sample.ID -->
+<!-- anno.data = anno.data[,-1,drop=F] -->
+
+
+<!-- curr.weights = deconstructSigsWeights(surv.maf,custom.bsg, ref.context = haloplex.context) -->
+
+<!-- pheatmap(curr.weights, annotation_col = anno.data, show_colnames = F) -->
+
+
+<!-- resp.weights = curr.weights[,which(colnames(curr.weights) %in% rownames(anno.data)[which(anno.data$PFS.group == "<6")])] -->
+<!-- pheatmap(resp.weights, show_colnames = F, main="PFS < 6") -->
+
+<!-- resp.weights = curr.weights[,which(colnames(curr.weights) %in% rownames(anno.data)[which(anno.data$PFS.group == ">12")])] -->
+<!-- pheatmap(resp.weights, show_colnames = F, main="PFS > 12") -->
+<!-- ``` -->
+
+<!-- ##Boxplots -->
+<!-- ```{r,  fig.height=7, fig.width=12} -->
+<!-- sig.weights = as.data.frame(t(curr.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$PFS.group = "<6" -->
+<!-- sig.weights$PFS.group[which(sig.weights$sample.ID %in% rownames(anno.data)[which(anno.data$PFS.group == ">12")])] = ">12" -->
+<!-- sig.weights = melt(sig.weights, id.cols = c("sample.ID","PFS.group")) -->
+<!-- colnames(sig.weights)[3:4] = c("Signature", "Contribution") -->
+
+<!-- ggplot(sig.weights, aes(Signature, Contribution, fill = PFS.group, color=PFS.group)) + geom_boxplot(outlier.color = NA, fill = "white",alpha=0.5) + -->
+<!--   theme_bw()  + theme(axis.text.x = element_text(angle=45,hjust=1), text = element_text(size=14)) + -->
+<!--   geom_point(alpha=0.5, position = position_jitterdodge(dodge.width = 0.95)) -->
+
+<!-- sigs = data.frame(Signature = unique(sig.weights$Signature), Signif = 0) -->
+
+<!-- for(i in 1:dim(sigs)[1]){ -->
+<!--   grp1 = sig.weights[which(sig.weights$PFS.group == "<6" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   grp2 = sig.weights[which(sig.weights$PFS.group == ">12" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   wilcox.res = wilcox.test(grp1, grp2) -->
+<!--   sigs$Signif[i] = round(wilcox.res$p.value, 3) -->
+<!-- } -->
+<!-- library(data.table, quietly=T) -->
+<!-- sigs = sigs[order(sigs$Signif,decreasing = F),] -->
+
+<!-- data.table(sigs) -->
+<!-- ``` -->
+
+<!-- ##De Novo - NMF {.tabset} -->
+<!-- ###PFS < 6 months -->
+<!-- ```{r} -->
+<!-- short.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == "<6")]),] -->
+<!-- short.denovo = deNovoSigs(short.maf, nrun=5, ref.context = haloplex.context) -->
+
+<!-- short.denovo$Plot.Norm + ggtitle("VEGF PFS < 6 months") -->
+<!-- pheatmap(short.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months") -->
+<!-- plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months", cutoff = 0.8) -->
+<!-- ``` -->
+
+<!-- ###PFS > 12 months -->
+<!-- ```{r} -->
+<!-- long.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == ">12")]),] -->
+<!-- long.denovo = deNovoSigs(long.maf, nrun=5, ref.context = haloplex.context) -->
+<!-- long.denovo$Plot.Norm + ggtitle("VEGF PFS > 12 Months") -->
+<!-- pheatmap(long.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(long.denovo$Signatures,title="PFS > 12 Months") -->
+<!-- plotDeNovoSimilarity(long.denovo$Signatures,title="PFS > 12 Months", cutoff = 0.8) -->
+<!-- ``` -->
+
+
+<!-- ##De Novo - BayesNMF {.tabset} -->
+<!-- ###PFS < 6 months -->
+<!-- ```{r} -->
+<!-- short.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == "<6")]),] -->
+<!-- short.denovo = hush(bayesDeNovo(short.maf, ref.context = haloplex.context)) -->
+<!-- if(length(short.denovo) == 1){ -->
+<!--   print(short.denovo) -->
+<!-- } -->
+<!-- if(length(short.denovo) > 1){ -->
+<!--   short.denovo$Plot + ggtitle("VEGF PFS < 6 months") -->
+<!--   pheatmap(short.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!--   plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months") -->
+<!--   plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months", cutoff = 0.8) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ###PFS > 12 months -->
+<!-- ```{r} -->
+<!-- long.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == ">12")]),] -->
+<!-- long.denovo = hush(bayesDeNovo(long.maf, ref.context = haloplex.context)) -->
+<!-- long.denovo$Plot + ggtitle("VEGF PFS > 12 Months") -->
+<!-- pheatmap(long.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(long.denovo$Signatures,title="PFS > 12 Months") -->
+<!-- plotDeNovoSimilarity(long.denovo$Signatures,title="PFS > 12 Months", cutoff = 0.8) -->
+<!-- ``` -->
+
+
+<!-- ##Cox Regression {.tabset} -->
+<!-- ```{r,results='asis'} -->
+<!-- panderOptions('knitr.auto.asis',FALSE) -->
+<!-- curr.weights = deconstructSigsWeights(rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID),],custom.bsg, ref.context = haloplex.context) -->
+<!-- strong.signatures = as.character(rownames(curr.weights)) -->
+<!-- sig.weights = as.data.frame(t(curr.weights),stringsAsFactors=F) -->
+<!-- sig.weights = sig.weights[,strong.signatures] -->
+<!-- sig.weights = as.data.frame(cbind(rownames(sig.weights), sig.weights),stringsAsFactors=F) -->
+<!-- colnames(sig.weights)[1] = "sample.ID" -->
+<!-- pfs.data = clinical.vegf[,c("sample.ID","best.PFS.VEGF-TT","PFS.status")] -->
+
+<!-- pfs.sigs = merge(pfs.data, sig.weights,by="sample.ID") -->
+
+
+<!-- for(curr in strong.signatures){ -->
+<!--     cat(paste0("\n\n### ",curr," \n\n")) -->
+<!--     res = customForest(pfs.sigs, include = curr, survival.time = "best.PFS.VEGF-TT", survival.status = "PFS.status",deceased.status = "progressed",log.scale = T) -->
+<!--     if(any(!is.null(res))){ -->
+<!--       pander(res) -->
+<!--       cat("\n\n") -->
+<!--     } -->
+<!--     cat("\n\n") -->
+<!-- } -->
+
+
+<!-- ``` -->
+
+
+
+<!-- #Mutational Signatures - ICI Extreme Responders {.tabset} -->
+<!-- ##deconstructSigs -->
+<!-- ```{r, fig.height=7, fig.width=10} -->
+<!-- clinical.ici$PFS.group = "mid" -->
+<!-- clinical.ici$PFS.group[which(clinical.ici$best.PFS.immunotherapy < 6)] = "<6" -->
+<!-- clinical.ici$PFS.group[which(clinical.ici$best.PFS.immunotherapy > 12)] = ">12" -->
+
+<!-- surv.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.ici$sample.ID[which(clinical.ici$PFS.group %in% c("<6",">12"))]),] -->
+
+<!-- anno.data = clinical.ici[,c("sample.ID","PFS.group")] -->
+<!-- rownames(anno.data) = anno.data$sample.ID -->
+<!-- anno.data = anno.data[,-1,drop=F] -->
+
+
+<!-- curr.weights = deconstructSigsWeights(surv.maf,custom.bsg, ref.context = haloplex.context) -->
+
+<!-- pheatmap(curr.weights, annotation_col = anno.data, show_colnames = F) -->
+
+
+<!-- resp.weights = curr.weights[,which(colnames(curr.weights) %in% rownames(anno.data)[which(anno.data$PFS.group == "<6")])] -->
+<!-- pheatmap(resp.weights, show_colnames = F, main="PFS < 6") -->
+
+<!-- resp.weights = curr.weights[,which(colnames(curr.weights) %in% rownames(anno.data)[which(anno.data$PFS.group == ">12")])] -->
+<!-- pheatmap(resp.weights, show_colnames = F, main="PFS > 12") -->
+<!-- ``` -->
+
+<!-- ##Boxplots -->
+<!-- ```{r,  fig.height=7, fig.width=12} -->
+<!-- sig.weights = as.data.frame(t(curr.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$PFS.group = "<6" -->
+<!-- sig.weights$PFS.group[which(sig.weights$sample.ID %in% rownames(anno.data)[which(anno.data$PFS.group == ">12")])] = ">12" -->
+<!-- sig.weights = melt(sig.weights, id.cols = c("sample.ID","PFS.group")) -->
+<!-- colnames(sig.weights)[3:4] = c("Signature", "Contribution") -->
+
+<!-- ggplot(sig.weights, aes(Signature, Contribution, fill = PFS.group, color=PFS.group)) + geom_boxplot(outlier.color = NA, fill = "white",alpha=0.5) + -->
+<!--   theme_bw()  + theme(axis.text.x = element_text(angle=45,hjust=1), text = element_text(size=14)) + -->
+<!--   geom_point(alpha=0.5, position = position_jitterdodge(dodge.width = 0.95)) -->
+
+<!-- sigs = data.frame(Signature = unique(sig.weights$Signature), Signif = 0) -->
+
+<!-- for(i in 1:dim(sigs)[1]){ -->
+<!--   grp1 = sig.weights[which(sig.weights$PFS.group == "<6" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   grp2 = sig.weights[which(sig.weights$PFS.group == ">12" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   wilcox.res = wilcox.test(grp1, grp2) -->
+<!--   sigs$Signif[i] = round(wilcox.res$p.value, 3) -->
+<!-- } -->
+<!-- library(data.table, quietly=T) -->
+<!-- sigs = sigs[order(sigs$Signif,decreasing = F),] -->
+
+<!-- data.table(sigs) -->
+<!-- ``` -->
+
+<!-- ##De Novo - NMF {.tabset} -->
+<!-- ###PFS < 6 months -->
+<!-- ```{r} -->
+<!-- short.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.ici$sample.ID[which(clinical.ici$PFS.group == "<6")]),] -->
+<!-- short.denovo = deNovoSigs(short.maf, nrun=5, ref.context = haloplex.context) -->
+<!-- short.denovo$Plot.Norm -->
+
+<!-- pheatmap(short.denovo$Contributions, show_colnames = F, main="Contributions") -->
+<!-- plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months") -->
+<!-- plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months", cutoff = 0.8) -->
+<!-- ``` -->
+
+<!-- ###PFS > 12 months -->
+<!-- Insufficient Sample Size -->
+
+
+<!-- ##De Novo - BayesNMF{.tabset} -->
+<!-- ###PFS < 6 months -->
+<!-- ```{r} -->
+<!-- short.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.ici$sample.ID[which(clinical.ici$PFS.group == "<6")]),] -->
+<!-- short.denovo = hush(bayesDeNovo(short.maf, ref.context = haloplex.context)) -->
+<!-- if(length(short.denovo) == 1){ -->
+<!--   print(short.denovo) -->
+<!-- } -->
+<!-- if(length(short.denovo) > 1){ -->
+<!--   short.denovo$Plot -->
+
+<!--   pheatmap(short.denovo$Contributions, show_colnames = F, main="Contributions") -->
+<!--   plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months") -->
+<!--   plotDeNovoSimilarity(short.denovo$Signatures,title="PFS < 6 Months",cutoff = 0.8) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ###PFS > 12 months -->
+<!-- ```{r} -->
+<!-- short.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.ici$sample.ID[which(clinical.ici$PFS.group == ">12")]),] -->
+<!-- short.denovo = hush(bayesDeNovo(short.maf, ref.context = haloplex.context)) -->
+<!-- if(length(short.denovo) == 1){ -->
+<!--   print(short.denovo) -->
+<!-- } -->
+<!-- if(length(short.denovo) > 1){ -->
+<!--   short.denovo$Plot -->
+
+<!--   pheatmap(short.denovo$Contributions, show_colnames = F, main="Contributions") -->
+<!--   plotDeNovoSimilarity(short.denovo$Signatures,title="PFS > 12 Months") -->
+<!--   plotDeNovoSimilarity(short.denovo$Signatures,title="PFS > 12 Months", cutoff=  0.8) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ##Cox Regression {.tabset} -->
+<!-- ```{r,results='asis'} -->
+<!-- panderOptions('knitr.auto.asis',FALSE) -->
+<!-- curr.weights = deconstructSigsWeights(rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.ici$sample.ID),],custom.bsg, ref.context = haloplex.context) -->
+<!-- strong.signatures = as.character(rownames(curr.weights)) -->
+<!-- sig.weights = as.data.frame(t(curr.weights),stringsAsFactors=F) -->
+<!-- sig.weights = sig.weights[,strong.signatures] -->
+<!-- sig.weights = as.data.frame(cbind(rownames(sig.weights), sig.weights),stringsAsFactors=F) -->
+<!-- colnames(sig.weights)[1] = "sample.ID" -->
+<!-- pfs.data = clinical.ici[,c("sample.ID","best.PFS.immunotherapy","PFS.status")] -->
+
+<!-- pfs.sigs = merge(pfs.data, sig.weights,by="sample.ID") -->
+
+
+<!-- for(curr in strong.signatures){ -->
+<!--     cat(paste0("\n\n### ",curr," \n\n")) -->
+<!--     res = customForest(pfs.sigs, include = curr, survival.time = "best.PFS.immunotherapy", survival.status = "PFS.status",deceased.status = "progressed",log.scale = T) -->
+<!--     if(any(!is.null(res))){ -->
+<!--       pander(res) -->
+<!--       cat("\n\n") -->
+<!--     } -->
+<!--     cat("\n\n") -->
+<!-- } -->
+
+
+<!-- ``` -->
+
+
+<!-- #Mutational Signautres - Smokers vs Non-Smokers {.tabset} -->
+<!-- ##Heatmaps -->
+<!-- ```{r, fig.height=7, fig.width=10} -->
+<!-- smoker.anno = clinical.data[,c("sample.ID","former.smoker")] -->
+<!-- smoker.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% smoker.anno$sample.ID),] -->
+<!-- rownames(smoker.anno) = smoker.anno$sample.ID -->
+<!-- smoker.anno = smoker.anno[,-1,drop=F] -->
+
+
+<!-- #seqnames(custom.bsg)[1:25] = paste0("chr",seqnames(custom.bsg)[1:25]) -->
+<!-- smoker.weights = deconstructSigsWeights(smoker.maf,custom.bsg, ref.context = haloplex.context) -->
+
+
+<!-- pheatmap(smoker.weights, show_colnames = F, annotation_col = smoker.anno) -->
+
+<!-- resp.weights = smoker.weights[,which(colnames(smoker.weights) %in% rownames(smoker.anno)[which(smoker.anno$former.smoker == "Y")])] -->
+<!-- pheatmap(resp.weights, show_colnames = F, main="Smoker") -->
+
+<!-- resp.weights = smoker.weights[,which(colnames(smoker.weights) %in% rownames(smoker.anno)[which(smoker.anno$former.smoker == "N")])] -->
+<!-- pheatmap(resp.weights, show_colnames = F, main="Non-Smoker") -->
+<!-- ``` -->
+
+<!-- ##Boxplots -->
+<!-- ```{r,  fig.height=7, fig.width=12} -->
+<!-- sig.weights = as.data.frame(t(smoker.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$former.smoker = "No" -->
+<!-- sig.weights$former.smoker[which(sig.weights$sample.ID %in% rownames(smoker.anno)[which(smoker.anno$former.smoker == "Y")])] = "Yes" -->
+<!-- sig.weights = melt(sig.weights, id.cols = c("sample.ID","former.smoker")) -->
+<!-- colnames(sig.weights)[3:4] = c("Signature", "Contribution") -->
+
+<!-- ggplot(sig.weights, aes(Signature, Contribution, fill = former.smoker, color=former.smoker)) + geom_boxplot(outlier.color = NA, fill = "white",alpha=0.5) + -->
+<!--   theme_bw()  + theme(axis.text.x = element_text(angle=45,hjust=1), text = element_text(size=14)) + -->
+<!--   geom_point(alpha=0.5, position = position_jitterdodge(dodge.width = 0.95)) -->
+
+<!-- sigs = data.frame(Signature = unique(sig.weights$Signature), Signif = 0) -->
+
+<!-- for(i in 1:dim(sigs)[1]){ -->
+<!--   grp1 = sig.weights[which(sig.weights$former.smoker == "No" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   grp2 = sig.weights[which(sig.weights$former.smoker == "Yes" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   wilcox.res = wilcox.test(grp1, grp2) -->
+<!--   sigs$Signif[i] = round(wilcox.res$p.value, 3) -->
+<!-- } -->
+<!-- library(data.table, quietly=T) -->
+<!-- sigs = sigs[order(sigs$Signif,decreasing = F),] -->
+
+<!-- data.table(sigs) -->
+
+<!-- ``` -->
+
+<!-- ##Logistic Regression {.tabset} -->
+<!-- ```{r, results='asis'} -->
+<!-- sig.weights = as.data.frame(t(smoker.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$former.smoker = "No" -->
+<!-- sig.weights$former.smoker[which(sig.weights$sample.ID %in% rownames(smoker.anno)[which(smoker.anno$former.smoker == "Y")])] = "Yes" -->
+<!-- sig.weights$former.smoker = as.factor(sig.weights$former.smoker) -->
+<!-- sig.weights$former.smoker = relevel(sig.weights$former.smoker, ref = "No") -->
+
+<!-- panderOptions('knitr.auto.asis',FALSE) -->
+<!-- for(curr in colnames(sig.weights)){ -->
+<!--   if(curr %in% c("sample.ID", "former.smoker")){ -->
+<!--     next -->
+<!--   } -->
+<!--   cat(paste0("\n\n### ", curr, "\n\n")) -->
+<!--   sub.weight = sig.weights[,c("former.smoker", curr)] -->
+<!--   curr.model = glm(former.smoker ~ ., data = sub.weight, family = binomial(link="logit")) -->
+<!--   pander(curr.model) -->
+<!--   cat("\n\n") -->
+<!-- } -->
+
+<!-- ``` -->
+
+<!-- ##De Novo - NMF{.tabset} -->
+<!-- ###Smokers -->
+<!-- ```{r} -->
+<!-- smoker.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID[which(clinical.data$former.smoker == "Y")]),] -->
+<!-- smoker.denovo = deNovoSigs(smoker.maf, nrun=5, ref.context = haloplex.context) -->
+<!-- smoker.denovo$Plot.Norm + ggtitle("Smokers") -->
+<!-- pheatmap(smoker.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(smoker.denovo$Signatures,title="Smokers") -->
+<!-- plotDeNovoSimilarity(smoker.denovo$Signatures,title="Smokers", cutoff = 0.8) -->
+<!-- ``` -->
+
+<!-- ###Non-Smokers -->
+<!-- ```{r} -->
+<!-- nonsmoker.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID[which(clinical.data$former.smoker == "N")]),] -->
+<!-- nonsmoker.denovo = deNovoSigs(nonsmoker.maf, nrun=5, ref.context = haloplex.context) -->
+<!-- nonsmoker.denovo$Plot.Norm + ggtitle("Non-Smokers") -->
+<!-- pheatmap(nonsmoker.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(nonsmoker.denovo$Signatures,title="Non-Smokers") -->
+<!-- plotDeNovoSimilarity(nonsmoker.denovo$Signatures,title="Non-Smokers", cutoff = 0.8) -->
+<!-- ``` -->
+
+
+<!-- ##De Novo - BayesNMF{.tabset} -->
+<!-- ###Smokers -->
+<!-- ```{r} -->
+<!-- smoker.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID[which(clinical.data$former.smoker == "Y")]),] -->
+<!-- smoker.denovo = hush(bayesDeNovo(smoker.maf, ref.context = haloplex.context)) -->
+<!-- smoker.denovo$Plot + ggtitle("Smokers") -->
+<!-- pheatmap(smoker.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(smoker.denovo$Signatures,title="Smokers") -->
+<!-- plotDeNovoSimilarity(smoker.denovo$Signatures,title="Smokers", cutoff = 0.8) -->
+<!-- ``` -->
+
+<!-- ###Non-Smokers -->
+<!-- ```{r} -->
+<!-- nonsmoker.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.data$sample.ID[which(clinical.data$former.smoker == "N")]),] -->
+<!-- nonsmoker.denovo = hush(bayesDeNovo(nonsmoker.maf, ref.context = haloplex.context)) -->
+<!-- nonsmoker.denovo$Plot + ggtitle("Non-Smokers") -->
+<!-- pheatmap(nonsmoker.denovo$Contributions, show_colnames = F, main = "Contributions") -->
+<!-- plotDeNovoSimilarity(nonsmoker.denovo$Signatures,title="Non-Smokers") -->
+<!-- plotDeNovoSimilarity(nonsmoker.denovo$Signatures,title="Non-Smokers", cutoff = 0.8) -->
+<!-- ``` -->
+
+<!-- #Potentially Significant Variables {.tabset} -->
+<!-- ##VEGF PFS {.tabset} -->
+<!-- ```{r} -->
+<!-- vegf.maf = rcc.maf[which(rcc.maf$Tumor_Sample_Barcode %in% clinical.vegf$sample.ID),] -->
+<!-- vegf.weights = deconstructSigsWeights(vegf.maf,custom.bsg, haloplex.context) -->
+<!-- vegf.weights = as.data.frame(t(vegf.weights),stringsAsFactors=F) -->
+<!-- vegf.weights$sample.ID = rownames(vegf.weights) -->
+<!-- vegf.weights = vegf.weights[,c("sample.ID","Signature.3", "Signature.8","Signature.29")] -->
+<!-- vegf.weights.clin = merge(vegf.weights, clinical.vegf, by="sample.ID") -->
+<!-- ``` -->
+
+<!-- ###Signature 29 -->
+<!-- ```{r} -->
+<!-- customForest(vegf.weights.clin, "Signature.29","best.PFS.VEGF-TT", "PFS.status","progressed",title="Cox Regression for VEGF PFS") -->
+<!-- ``` -->
+
+<!-- ###Smoking -->
+<!-- ```{r} -->
+<!-- customForest(vegf.weights.clin, "former.smoker","best.PFS.VEGF-TT", "PFS.status","progressed",title="Cox Regression for VEGF PFS") -->
+<!-- ``` -->
+
+<!-- ##Signature 29 + Smoking Status -->
+<!-- ```{r} -->
+<!-- customForest(vegf.weights.clin, c("Signature.29","former.smoker"),"best.PFS.VEGF-TT", "PFS.status","progressed",title="Cox Regression for VEGF PFS") -->
+
+<!-- #What's the relationship between signature 29 and former smokers?? -->
+
+<!-- ggplot(vegf.weights.clin, aes(former.smoker, Signature.29)) + geom_boxplot() + stat_compare_means() + geom_jitter(width=0.25) -->
+<!-- ``` -->
+
+
+<!-- #Swimmer Plots -->
+<!-- ```{r,fig.height=5, fig.width=11} -->
+<!-- #Separated -->
+<!-- library(reshape2,quietly=T) -->
+
+<!-- trt.data.tmp = clinical.data.samples[which(clinical.data.samples$RCC.histology == "clear cell"),] -->
+<!-- strt.col = which(colnames(trt.data.tmp) == "date.metastatic.disease") -->
+<!-- end.col = which(colnames(trt.data.tmp) == "date.of.progressive.disease.after.immunotherapy") -->
+<!-- trt.data.tmp = trt.data.tmp[,c(1:3,strt.col : end.col)] -->
+<!-- date.cols = grep("\\.date",colnames(trt.data.tmp)) -->
+<!-- date.cols = c(date.cols, grep("date\\.",colnames(trt.data.tmp))) -->
+<!-- #dx.col = which(colnames(trt.data.tmp) == "dx.date") -->
+<!-- #date.cols = date.cols[-which(date.cols == dx.col)] -->
+<!-- # for(curr in date.cols){ -->
+<!-- #   trt.data.tmp[,curr] = round(as.numeric(trt.data.tmp[,curr] - trt.data.tmp[,dx.col])/30.5,2) -->
+<!-- # } -->
+<!-- #trt.data.tmp = trt.data.tmp[,-16] -->
+
+<!-- trt.data.tmp = melt(trt.data.tmp,id.vars = c("PMID","sample.ID","date.metastatic.disease","OS.dx","vital.status","sampling.date")) -->
+<!-- colnames(trt.data.tmp)[7:8] = c("Event","Time") -->
+
+<!-- start.inds = grep("date\\.start\\.",trt.data.tmp$Event) -->
+<!-- prog.inds = grep("progressive\\.disease\\.after\\.",trt.data.tmp$Event) -->
+<!-- type.inds = grep("treatment\\.type",trt.data.tmp$Event) -->
+
+<!-- swim.data = trt.data.tmp[1:length(start.inds), 1:6] -->
+<!-- swim.data$trt.start = trt.data.tmp$Time[start.inds] -->
+<!-- swim.data$trt.prog = trt.data.tmp$Time[prog.inds] -->
+<!-- swim.data$trt.type = trt.data.tmp$Time[type.inds] -->
+
+<!-- #swim.data = swim.data[-which(is.na(swim.data$trt.start)),] -->
+<!-- swim.data$trt.start = as.numeric(swim.data$trt.start) -->
+<!-- swim.data$trt.prog = as.numeric(swim.data$trt.prog) -->
+<!-- swim.data$OS = as.numeric(swim.data$OS)/30.5 -->
+<!-- swim.data$trt.type[which(swim.data$trt.type == "immune checkpoint inhibitors")] = "immune checkpoint inhibitor" -->
+<!-- if(any(swim.data$trt.type == "", na.rm = T)){ -->
+<!--   swim.data$trt.type[which(swim.data$trt.type == "")] = NA -->
+<!-- } -->
+
+<!-- sel.inds = c() -->
+<!-- for(curr in unique(swim.data$PMID)){ -->
+<!--   ind = which(swim.data$PMID == curr)[1] -->
+<!--   sel.inds = c(sel.inds, ind) -->
+<!-- } -->
+<!-- swim.data$unique = "no" -->
+<!-- swim.data$unique[sel.inds] = "yes" -->
+
+<!-- swim.data = swim.data[order(swim.data$OS, decreasing=T),] -->
+<!-- swim.data$PMID = factor(swim.data$PMID, levels = unique(swim.data$PMID[order(swim.data$OS, decreasing = F)])) -->
+<!-- need.pmids = unique(swim.data$PMID) -->
+
+<!-- ``` -->
+
+
+
+<!-- ```{r,fig.height=15, fig.width=11} -->
+<!-- #Collapsed -->
+<!-- ggplot(swim.data, aes(y=PMID)) + geom_segment(aes(x=0, xend = swim.data$OS.dx, y=swim.data$PMID,yend=swim.data$PMID,alpha=swim.data$unique),fill="gray80",size=4) + -->
+<!--   geom_segment(aes(x=swim.data$trt.start,xend=swim.data$trt.prog,y=swim.data$PMID,yend=swim.data$PMID, color=swim.data$trt.type), size=2) + -->
+<!--   theme(panel.background = element_rect(fill="white"), -->
+<!--         axis.line.x = element_line(), -->
+<!--         axis.text.x = element_text(size=12), -->
+<!--         panel.grid=element_blank(), -->
+<!--         plot.background = element_rect(fill = "white"), -->
+<!--         legend.background = element_rect(fill="white"), -->
+<!--         legend.key = element_rect(fill="white",color="white"), -->
+<!--         text=element_text(size=16)) + -->
+<!--   geom_point(aes(x=swim.data$sampling.date, y=swim.data$PMID, shape="Sample Collection"),size=3,show.legend = F) + -->
+<!--   geom_point(aes(x=swim.data$OS.dx,y=swim.data$PMID,shape=swim.data$vital.status),size=2,show.legend = F) + -->
+<!--   geom_point(aes(x=swim.data$date.metastatic.disease,y=swim.data$PMID,shape="Metastasis Date"),size=3.5) + -->
+<!--   scale_x_continuous(breaks=seq(from=0,to=round(max(swim.data$OS.dx))+1, by = 12), limits = c(0, round(max(swim.data$OS.dx))+1)) + -->
+<!--   scale_color_brewer(palette = "Set2") + xlab("Months from Diagnosis") + -->
+<!--   scale_shape_manual("",values=c("Sample Collection" = 1, "Metastasis Date" = 3, "censored" = 0, "dead" = 15)) + -->
+<!--   scale_alpha_manual("alph", values=c("yes" = 0.1, "no"=0)) + -->
+<!--   guides(color = guide_legend(title="Treatment", order=2), size=FALSE, shape = guide_legend(title = "Event", order=1),alpha=FALSE) -->
+<!-- ``` -->
+
+
+<!-- #Tumor Indel Burden -->
+<!-- ##Distribtuion {.tabset} -->
+<!-- ###Overall -->
+<!-- ```{r} -->
+<!-- #calculate number of indels -->
+<!-- rcc.indels = data.frame(sample.ID = unique(rcc.maf$Tumor_Sample_Barcode), tib = 0) -->
+<!-- for(i in 1:dim(rcc.indels)[1]){ -->
+<!--   rcc.indels[i,2] = length(which(rcc.maf$Tumor_Sample_Barcode == rcc.indels[i,1] & rcc.maf$Variant_Type %in% c("DEL","INS"))) -->
+<!-- } -->
+
+<!-- ggplot(rcc.indels, aes(tib)) + geom_histogram() -->
+
+<!-- ``` -->
+
+<!-- ###VEGF Resposne -->
+<!-- ```{r} -->
+<!-- library(sjPlot) -->
+<!-- library(sjmisc) -->
+<!-- library(sjlabelled) -->
+<!-- clinical.vegf.tib = merge(rcc.indels, clinical.vegf, by = "sample.ID") -->
+<!-- clinical.vegf.tib = clinical.vegf.tib[which(clinical.vegf.tib$metastatis == "Y"),] -->
+
+<!-- ggplot(clinical.vegf.tib[which(clinical.vegf.tib$PFS.group %in% c("<6", ">12")),],aes(PFS.group, tib, fill=PFS.group)) + -->
+<!--   geom_boxplot() + stat_compare_means() + guides(fill=F) + ylab("Number of Indels") + xlab("VEGF PFS") -->
+
+<!-- clinical.vegf.tib.tmp = clinical.vegf.tib[which(clinical.vegf.tib$PFS.group %in% c("<6", ">12")),] -->
+<!-- clinical.vegf.tib.tmp$PFS.group.code = 0 -->
+<!-- clinical.vegf.tib.tmp$PFS.group.code[which(clinical.vegf.tib.tmp$PFS.group == ">12")] = 1 -->
+<!-- clinical.vegf.tib.tmp$PFS.group.code = as.factor(clinical.vegf.tib.tmp$PFS.group.code) -->
+<!-- curr.model = glm(PFS.group.code ~ tib, data = clinical.vegf.tib.tmp, family = binomial(link = "logit")) -->
+<!-- tab_model(curr.model) -->
+
+<!-- customForest(clinical.vegf.tib, include = "tib", survival.time = "best.PFS.VEGF-TT", survival.status = "PFS.status", deceased.status = "progressed") -->
+
+<!-- ``` -->
+
+<!-- ###ICI Response -->
+<!-- ```{r} -->
+<!-- clinical.os.ici.tib = merge(rcc.indels, clinical.ici, by = "sample.ID") -->
+<!-- clinical.os.ici.tib = clinical.os.ici.tib[which(clinical.os.ici.tib$metastatis == "Y"),] -->
+<!-- # clinical.os.ici.tib$OS.group = "mid" -->
+<!-- # clinical.os.ici.tib$OS.group[which(clinical.os.ici.tib$OS__Mets_FU < 24)] = "<24" -->
+<!-- # clinical.os.ici.tib$OS.group[which(clinical.os.ici.tib$OS__Mets_FU > 72)] = ">72" -->
+
+<!-- ggplot(clinical.os.ici.tib[which(clinical.os.ici.tib$PFS.group %in% c("<6", ">12")),],aes(PFS.group, tib, fill=PFS.group)) + -->
+<!--   geom_boxplot() + stat_compare_means() + guides(fill=F) + ylab("Number of Indels") + xlab("ICI PFS") -->
+
+<!-- clinical.os.ici.tib.tmp = clinical.os.ici.tib[which(clinical.os.ici.tib$PFS.group %in% c("<6", ">12")),] -->
+<!-- clinical.os.ici.tib.tmp$PFS.group.code = 0 -->
+<!-- clinical.os.ici.tib.tmp$PFS.group.code[which(clinical.os.ici.tib.tmp$PFS.group == ">12")] = 1 -->
+<!-- clinical.os.ici.tib.tmp$PFS.group.code = as.factor(clinical.os.ici.tib.tmp$PFS.group.code) -->
+<!-- curr.model = glm(PFS.group.code ~ tib, data = clinical.os.ici.tib.tmp, family = binomial(link = "logit")) -->
+<!-- tab_model(curr.model) -->
+
+<!-- customForest(clinical.os.ici.tib, include = "tib", survival.time = "best.PFS.immunotherapy", survival.status = "PFS.status", deceased.status = "progressed") -->
+<!-- ``` -->
+
+
+<!-- ###Clinical Factors {.tabset} -->
+<!-- ```{r, results='asis'} -->
+<!-- clinical.tib = merge(rcc.indels, clinical.data, by="sample.ID") -->
+<!-- for(curr in risk.factors){ -->
+<!--   if(curr %in% c("TMB.status","TMB.Corrected")){ -->
+<!--     next -->
+<!--   } -->
+<!--   if(curr == "BMI.30"){ -->
+<!--     curr = "BMI>30" -->
+<!--   } -->
+<!--   cat(paste0("\n\n##### ",curr,"\n\n")) -->
+<!--   clin.tmp = clinical.tib[,c("sample.ID","tib",curr)] -->
+<!--   colnames(clin.tmp)[3] = "curr" -->
+<!--   plt = ggplot(clin.tmp, aes(curr, tib, fill = curr)) + geom_boxplot(alpha=0.7) + -->
+<!--     stat_compare_means() + xlab(curr) + guides(fill=F) + ylab("Number of Indels") -->
+<!--   print(plt) -->
+<!--   cat("\n\n") -->
+
+
+<!--   if(curr == "Tx.prior.to.sampling"){ -->
+<!--     plt = ggplot(clin.tmp, aes(curr, tib, fill = curr)) + theme_bw() + geom_boxplot(alpha=0.7) + -->
+<!--       stat_compare_means() + xlab("Sampled After Treatment") + guides(fill=F) + ggtitle("Number of Indels for ccRCC Patients by Treatment Prior to Sampling") + -->
+<!--       ylab("Number of Indels") -->
+<!--     ggsave(plt, file="~/Documents/ccRCC/indels_trt.png") -->
+<!--   } -->
+
+
+<!-- } -->
+
+
+<!-- ``` -->
+
+<!-- ##Signatures {.tabset} -->
+<!-- ###Long Term -->
+<!-- ```{r} -->
+<!-- #Length of indels? -->
+<!-- rcc.maf.tmp = rcc.maf -->
+<!-- rcc.maf.tmp = rcc.maf.tmp[which(rcc.maf.tmp$Variant_Type %in% c("INS", "DEL")),] -->
+<!-- rcc.maf.tmp$len = (rcc.maf.tmp$End_position - rcc.maf.tmp$Start_position) + 1 -->
+<!-- num.lens = max(rcc.maf.tmp$len) -->
+
+<!-- rcc.indel.lengths = c() -->
+<!-- for(curr in unique(rcc.maf$Tumor_Sample_Barcode)){ -->
+<!--   if(curr %in% rcc.maf.tmp$Tumor_Sample_Barcode){ -->
+<!--     curr.row = c(curr) -->
+<!--     for(i in 1:num.lens){ -->
+<!--       curr.row = c(curr.row, length(which(rcc.maf.tmp$Tumor_Sample_Barcode == curr & rcc.maf.tmp$len == i))) -->
+<!--     } -->
+
+<!--   } -->
+
+<!--   if(!curr %in% rcc.maf.tmp$Tumor_Sample_Barcode){ -->
+<!--     curr.row = c(curr, rep(0,num.lens)) -->
+<!--   } -->
+
+<!--   rcc.indel.lengths = as.data.frame(rbind(rcc.indel.lengths, curr.row), stringsAsFactors=F) -->
+
+<!-- } -->
+
+
+<!-- colnames(rcc.indel.lengths) = c("sample.ID",paste0("len.",1:num.lens)) -->
+
+
+<!-- indel.good.pfs = rcc.indel.lengths[which(rcc.indel.lengths$sample.ID %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == ">12")]),] -->
+
+<!-- #Look at signatures and PCA -->
+
+<!-- #Fit to NMF -->
+<!-- ##Don't normalize for now. -->
+<!-- ##Can normalize for haloplex regions later -->
+<!-- rownames(indel.good.pfs) = indel.good.pfs$sample.ID -->
+<!-- indel.good.pfs = indel.good.pfs[,-1] -->
+<!-- indel.good.pfs = as.data.frame(t(indel.good.pfs),stringsAsFactors=F) -->
+
+<!-- indel.good.pfs = apply(indel.good.pfs, 2, FUN=as.numeric) -->
+
+<!-- indel.good.pfs = indel.good.pfs + 0.0001 -->
+<!-- estimate = nmf(indel.good.pfs, rank=2:5, method = "brunet", nrun=5, seed=12345) -->
+<!-- #find optimal rank -->
+<!-- nmf.summary = summary(estimate) -->
+<!-- nmf.summary$diffs = c(0, diff(nmf.summary$cophenetic)) -->
+<!-- opt.rank = nmf.summary$rank[(which(nmf.summary$diff < 0)[1] -1)] -->
+<!-- if(is.na(opt.rank)){ -->
+<!--   opt.rank = 2 -->
+<!-- } -->
+<!-- nmf.mat = nmf(indel.good.pfs, rank = opt.rank, method = "brunet", seed=12345) -->
+
+<!-- nmf.signatures = NMF::basis(nmf.mat) -->
+<!-- nmf.signatures = as.data.frame(nmf.signatures, stringsAsFactors=F) -->
+<!-- colnames(nmf.signatures) = paste0("De Novo ", LETTERS[1:opt.rank]) -->
+
+<!-- nmf.contributions = NMF::coef(nmf.mat) -->
+<!-- rownames(nmf.contributions) = colnames(nmf.signatures) -->
+
+<!-- #normalize signatures? -->
+<!-- nmf.signatures = apply(nmf.signatures,2,FUN=function(x){x/sum(x)}) -->
+<!-- nmf.signatures = as.data.frame(nmf.signatures) -->
+<!-- rownames(nmf.signatures) = paste0("length.",1:28) -->
+<!-- nmf.signatures.good = nmf.signatures -->
+<!-- nmf.signatures = melt(nmf.signatures) -->
+<!-- nmf.signatures$Length = 1:28 -->
+
+<!-- nmf.signatures.good.m = nmf.signatures -->
+<!-- ggplot(nmf.signatures.good.m,aes(Length, value)) + geom_col() + facet_grid(rows = vars(variable)) + ggtitle("Long Term") -->
+<!-- ``` -->
+
+<!-- ###Short Term -->
+<!-- ```{r} -->
+<!-- #Repeat for short -->
+
+<!-- #Compare with cosine similarity and only look at a signature if it's unique -->
+
+
+
+
+<!-- indel.poor.pfs = rcc.indel.lengths[which(rcc.indel.lengths$sample.ID %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == "<6")]),] -->
+
+<!-- #Look at signatures and PCA -->
+
+<!-- #Fit to NMF -->
+<!-- ##Don't normalize for now. -->
+<!-- ##Can normalize for haloplex regions later -->
+<!-- rownames(indel.poor.pfs) = indel.poor.pfs$sample.ID -->
+<!-- indel.poor.pfs = indel.poor.pfs[,-1] -->
+<!-- indel.poor.pfs = as.data.frame(t(indel.poor.pfs),stringsAsFactors=F) -->
+
+<!-- indel.poor.pfs = apply(indel.poor.pfs, 2, FUN=as.numeric) -->
+
+<!-- indel.poor.pfs = indel.poor.pfs + 0.0001 -->
+<!-- estimate = nmf(indel.poor.pfs, rank=2:5, method = "brunet", nrun=5, seed=12345) -->
+<!-- #find optimal rank -->
+<!-- nmf.summary = summary(estimate) -->
+<!-- nmf.summary$diffs = c(0, diff(nmf.summary$cophenetic)) -->
+<!-- opt.rank = nmf.summary$rank[(which(nmf.summary$diff < 0)[1] -1)] -->
+<!-- if(is.na(opt.rank)){ -->
+<!--   opt.rank = 2 -->
+<!-- } -->
+<!-- nmf.mat = nmf(indel.poor.pfs, rank = opt.rank, method = "brunet", seed=12345) -->
+
+<!-- nmf.signatures = NMF::basis(nmf.mat) -->
+<!-- nmf.signatures = as.data.frame(nmf.signatures, stringsAsFactors=F) -->
+<!-- colnames(nmf.signatures) = paste0("De Novo ", LETTERS[1:opt.rank]) -->
+
+<!-- nmf.contributions = NMF::coef(nmf.mat) -->
+<!-- rownames(nmf.contributions) = colnames(nmf.signatures) -->
+
+<!-- #normalize signatures? -->
+<!-- nmf.signatures = apply(nmf.signatures,2,FUN=function(x){x/sum(x)}) -->
+<!-- nmf.signatures = as.data.frame(nmf.signatures) -->
+<!-- rownames(nmf.signatures) = paste0("length.",1:28) -->
+<!-- nmf.signatures.poor = nmf.signatures -->
+<!-- nmf.signatures = melt(nmf.signatures) -->
+<!-- nmf.signatures$Length = 1:28 -->
+
+<!-- nmf.signatures.poor.m = nmf.signatures -->
+
+<!-- ggplot(nmf.signatures.poor.m,aes(Length, value)) + geom_col() + facet_grid(rows = vars(variable)) + ggtitle("Short Term") -->
+
+<!-- colnames(nmf.signatures.good) = paste0("long ",colnames(nmf.signatures.good)) -->
+<!-- colnames(nmf.signatures.poor) = paste0("short ", colnames(nmf.signatures.poor)) -->
+
+<!-- nmf.signatures.combined = as.data.frame(cbind(nmf.signatures.good, nmf.signatures.poor), stringsAsFactors=F) -->
+
+
+
+
+<!-- ``` -->
+
+<!-- ###Combined -->
+<!-- ```{r,fig.height=7, fig.width=6} -->
+<!-- pheatmap(nmf.signatures.combined) -->
+
+<!-- #looks like short de novo B is the only unique signature -->
+<!-- ``` -->
+
+<!-- ##PCA -->
+<!-- ```{r,fig.height=7, fig.width=10} -->
+<!-- #PCA based on number of each indel length -->
+
+
+
+<!-- indel.pfs.extremes = cbind(indel.good.pfs, indel.poor.pfs) -->
+<!-- indel.pfs.extremes = as.data.frame(indel.pfs.extremes, stringsAsFactors=F) -->
+<!-- rownames(indel.pfs.extremes) = paste0("len.",1:28) -->
+
+<!-- pca.res = prcomp(t(indel.pfs.extremes)) -->
+<!-- pca.res = as.data.frame(pca.res$x,stringsAsFactors=F) -->
+<!-- pca.res$sample.ID = rownames(pca.res) -->
+<!-- pca.res$PFS.group = "Mid" -->
+<!-- pca.res$PFS.group[which(pca.res$sample.ID %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == ">12")])] = ">12" -->
+<!-- pca.res$PFS.group[which(pca.res$sample.ID %in% clinical.vegf$sample.ID[which(clinical.vegf$PFS.group == "<6")])] = "<6" -->
+<!-- ggplot(pca.res,aes(PC1, PC2, color=PFS.group)) + geom_point(size=2.5, alpha=0.7) + ggtitle("PCA of Indel Lengths") -->
+
+<!-- ``` -->
+
+<!-- #Pre vs Post VEGF - All Samples {.tabset} -->
+<!-- ##Heatmap -->
+<!-- ```{r,fig.height=7, fig.width=10} -->
+<!-- anno.prior.trt = data.frame(sample.ID = unique(rcc.maf$Tumor_Sample_Barcode), prior.trt = "Unknown", stringsAsFactors=F) -->
+<!-- for(i in 1:nrow(anno.prior.trt)){ -->
+<!--   sample.date = clinical.data.samples$sampling.date[which(clinical.data.samples$sample.ID == anno.prior.trt$sample.ID[i])] -->
+
+<!--   curr.pmid = gsub("_.*","",gsub("Sample_","",gsub("\\..*","",anno.prior.trt$sample.ID[i]))) -->
+<!--   trt.date.cols = grep("date\\.start\\..*",colnames(clinical.data.samples)) -->
+<!--   trt.dates = clinical.data.samples[which(clinical.data.samples$PMID == curr.pmid),trt.date.cols] -->
+
+<!--   trt.types = clinical.data.samples[which(clinical.data.samples$PMID == curr.pmid),trt.date.cols+2] -->
+<!--   if(length(grep("VEGF",trt.types[1,])) > 0){ -->
+<!--     trt.dates[1,-grep("VEGF",trt.types[1,])] = NA -->
+<!--   } -->
+<!--   else{ -->
+<!--     trt.dates[1,] = NA -->
+<!--   } -->
+<!--   if(any(!is.na(trt.dates[1,]))){ -->
+<!--     if(any(as.numeric(trt.dates[1,]) < as.numeric(sample.date), na.rm=T)){ -->
+<!--       anno.prior.trt$prior.trt[i] = "Yes" -->
+<!--     } -->
+<!--     else{ -->
+<!--       anno.prior.trt$prior.trt[i] = "No" -->
+<!--     } -->
+<!--   } -->
+<!--   else{ -->
+<!--     anno.prior.trt$prior.trt[i] = "No" -->
+<!--   } -->
+
+<!-- } -->
+
+<!-- #No = 39 -->
+<!-- #Yes = 31 -->
+
+<!-- vegf.trt.p = anno.prior.trt -->
+
+<!-- #all.weights = deconstructSigsWeights(rcc.maf, custom.bsg, haloplex.context) -->
+
+
+<!-- rownames(anno.prior.trt) = anno.prior.trt$sample.ID -->
+<!-- anno.prior.trt = anno.prior.trt[,-1,drop=F] -->
+
+<!-- pheatmap(all.weights, annotation_col = anno.prior.trt, show_colnames = F) -->
+<!-- ``` -->
+
+<!-- ##Boxplots -->
+<!-- ```{r,results='asis', fig.height=7, fig.width=12} -->
+<!-- sig.weights = as.data.frame(t(all.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$prior.trt = "No" -->
+<!-- sig.weights$prior.trt[which(sig.weights$sample.ID %in% rownames(anno.prior.trt)[which(anno.prior.trt$prior.trt == "Yes")])] = "Yes" -->
+<!-- sig.weights = melt(sig.weights, id.cols = c("sample.ID","prior.trt")) -->
+<!-- colnames(sig.weights)[3:4] = c("Signature", "Contribution") -->
+
+<!-- ggplot(sig.weights, aes(Signature, Contribution, fill = prior.trt, color=prior.trt)) + geom_boxplot(outlier.color = NA, fill = "white",alpha=0.5) + -->
+<!--   theme_bw()  + theme(axis.text.x = element_text(angle=45,hjust=1), text = element_text(size=14)) + -->
+<!--   geom_point(alpha=0.5, position = position_jitterdodge(dodge.width = 0.95)) -->
+
+<!-- sigs = data.frame(Signature = unique(sig.weights$Signature), Signif = 0) -->
+
+<!-- for(i in 1:dim(sigs)[1]){ -->
+<!--   grp1 = sig.weights[which(sig.weights$prior.trt == "No" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   grp2 = sig.weights[which(sig.weights$prior.trt == "Yes" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   wilcox.res = wilcox.test(grp1, grp2) -->
+<!--   sigs$Signif[i] = round(wilcox.res$p.value, 3) -->
+<!-- } -->
+<!-- library(data.table, quietly=T) -->
+<!-- sigs = sigs[order(sigs$Signif,decreasing = F),] -->
+
+<!-- data.table(sigs) -->
+
+<!-- ``` -->
+
+
+<!-- ##Regression {.tabset} -->
+<!-- ```{r,results='asis'} -->
+<!-- sig.weights = as.data.frame(t(all.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$prior.trt = "No" -->
+<!-- sig.weights$prior.trt[which(sig.weights$sample.ID %in% rownames(anno.prior.trt)[which(anno.prior.trt$prior.trt == "Yes")])] = "Yes" -->
+<!-- sig.weights$prior.trt = as.factor(sig.weights$prior.trt) -->
+<!-- sig.weights$prior.trt = relevel(sig.weights$prior.trt, ref = "No") -->
+
+<!-- panderOptions('knitr.auto.asis',FALSE) -->
+<!-- for(curr in colnames(sig.weights)){ -->
+<!--   if(curr %in% c("sample.ID", "prior.trt")){ -->
+<!--     next -->
+<!--   } -->
+<!--   cat(paste0("\n\n### ", curr, "\n\n")) -->
+<!--   sub.weight = sig.weights[,c("prior.trt", curr)] -->
+<!--   curr.model = glm(prior.trt ~ ., data = sub.weight, family = binomial(link="logit")) -->
+<!--   pander(curr.model) -->
+<!--   cat("\n\n") -->
+<!-- } -->
+
+<!-- ``` -->
+
+
+
+
+<!-- #Pre vs Post Immune Checkpoint - All Samples {.tabset} -->
+<!-- ##Heatmap -->
+<!-- ```{r,fig.height=7, fig.width=10} -->
+<!-- anno.prior.trt = data.frame(sample.ID = unique(rcc.maf$Tumor_Sample_Barcode), prior.trt = "Unknown", stringsAsFactors=F) -->
+<!-- for(i in 1:nrow(anno.prior.trt)){ -->
+<!--   sample.date = clinical.data.samples$sampling.date[which(clinical.data.samples$sample.ID == anno.prior.trt$sample.ID[i])] -->
+
+<!--   curr.pmid = gsub("_.*","",gsub("Sample_","",gsub("\\..*","",anno.prior.trt$sample.ID[i]))) -->
+<!--   trt.date.cols = grep("date\\.start\\..*",colnames(clinical.data.samples)) -->
+<!--   trt.dates = clinical.data.samples[which(clinical.data.samples$PMID == curr.pmid),trt.date.cols] -->
+
+<!--   trt.types = clinical.data.samples[which(clinical.data.samples$PMID == curr.pmid),trt.date.cols+2] -->
+<!--   if(length(grep("immune",trt.types[1,])) > 0){ -->
+<!--     trt.dates[1,-grep("immune",trt.types[1,])] = NA -->
+<!--   } -->
+<!--   else{ -->
+<!--     trt.dates[1,] = NA -->
+<!--   } -->
+<!--   if(any(!is.na(trt.dates[1,]))){ -->
+<!--     if(any(as.numeric(trt.dates[1,]) < as.numeric(sample.date), na.rm=T)){ -->
+<!--       anno.prior.trt$prior.trt[i] = "Yes" -->
+<!--     } -->
+<!--     else{ -->
+<!--       anno.prior.trt$prior.trt[i] = "No" -->
+<!--     } -->
+<!--   } -->
+<!--   else{ -->
+<!--     anno.prior.trt$prior.trt[i] = "No" -->
+<!--   } -->
+
+<!-- } -->
+
+<!-- #No = 37 -->
+<!-- #Yes = 33 -->
+<!-- ici.trt.p = anno.prior.trt -->
+
+<!-- #all.weights = deconstructSigsWeights(rcc.maf, custom.bsg, haloplex.context) -->
+
+
+<!-- rownames(anno.prior.trt) = anno.prior.trt$sample.ID -->
+<!-- anno.prior.trt = anno.prior.trt[,-1,drop=F] -->
+
+<!-- pheatmap(all.weights, annotation_col = anno.prior.trt, show_colnames = F) -->
+
+<!-- ``` -->
+
+<!-- ##Boxplots -->
+<!-- ```{r,results='asis', fig.height=7, fig.width=12} -->
+<!-- sig.weights = as.data.frame(t(all.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$prior.trt = "No" -->
+<!-- sig.weights$prior.trt[which(sig.weights$sample.ID %in% rownames(anno.prior.trt)[which(anno.prior.trt$prior.trt == "Yes")])] = "Yes" -->
+<!-- sig.weights = melt(sig.weights, id.cols = c("sample.ID","prior.trt")) -->
+<!-- colnames(sig.weights)[3:4] = c("Signature", "Contribution") -->
+
+<!-- ggplot(sig.weights, aes(Signature, Contribution, fill = prior.trt, color=prior.trt)) + geom_boxplot(outlier.color = NA, fill = "white",alpha=0.5) + -->
+<!--   theme_bw()  + theme(axis.text.x = element_text(angle=45,hjust=1), text = element_text(size=14)) + -->
+<!--   geom_point(alpha=0.5, position = position_jitterdodge(dodge.width = 0.95)) -->
+
+<!-- sigs = data.frame(Signature = unique(sig.weights$Signature), Signif = 0) -->
+
+<!-- for(i in 1:dim(sigs)[1]){ -->
+<!--   grp1 = sig.weights[which(sig.weights$prior.trt == "No" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   grp2 = sig.weights[which(sig.weights$prior.trt == "Yes" & sig.weights$Signature == sigs$Signature[i]),"Contribution"] -->
+<!--   wilcox.res = wilcox.test(grp1, grp2) -->
+<!--   sigs$Signif[i] = round(wilcox.res$p.value, 3) -->
+<!-- } -->
+<!-- library(data.table, quietly=T) -->
+<!-- sigs = sigs[order(sigs$Signif,decreasing = F),] -->
+
+<!-- data.table(sigs) -->
+
+<!-- ``` -->
+
+
+<!-- ##Regression {.tabset} -->
+<!-- ```{r,results='asis'} -->
+<!-- sig.weights = as.data.frame(t(all.weights),stringsAsFactors=F) -->
+<!-- sig.weights$sample.ID = rownames(sig.weights) -->
+
+<!-- sig.weights$prior.trt = "No" -->
+<!-- sig.weights$prior.trt[which(sig.weights$sample.ID %in% rownames(anno.prior.trt)[which(anno.prior.trt$prior.trt == "Yes")])] = "Yes" -->
+<!-- sig.weights$prior.trt = as.factor(sig.weights$prior.trt) -->
+<!-- sig.weights$prior.trt = relevel(sig.weights$prior.trt, ref = "No") -->
+
+<!-- panderOptions('knitr.auto.asis',FALSE) -->
+<!-- for(curr in colnames(sig.weights)){ -->
+<!--   if(curr %in% c("sample.ID", "prior.trt")){ -->
+<!--     next -->
+<!--   } -->
+<!--   cat(paste0("\n\n### ", curr, "\n\n")) -->
+<!--   sub.weight = sig.weights[,c("prior.trt", curr)] -->
+<!--   curr.model = glm(prior.trt ~ ., data = sub.weight, family = binomial(link="logit")) -->
+<!--   pander(curr.model) -->
+<!--   cat("\n\n") -->
+<!-- } -->
+
+<!-- ``` -->
+

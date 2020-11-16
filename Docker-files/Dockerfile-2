@@ -1,0 +1,190 @@
+# Dockerfile for Oncomine Annotation Module (Phase 2) based on CentOS:7.6.1810
+FROM ipm-dc-dtr.weill.cornell.edu/ipm/centos@sha256:7c2df531c99880ec40f65afeeaba460e52ba1af0527d18ebdcfaa0c6e2113afe
+#===============================#
+# Docker Image Configuration	#
+#===============================#
+
+LABEL Description="OnCORSeq Phase 2" \
+	Vendor="Englander Institute for Precision Medicine" \
+	maintainer="sir2013@med.cornell.edu" \
+	base_image="ipm-dc-dtr.weill.cornell.edu/ipm/centos" \
+	base_image_version="7.6.1810.patched20191001" \
+	base_image_SHA256="sha256:7c2df531c99880ec40f65afeeaba460e52ba1af0527d18ebdcfaa0c6e2113afe"
+
+ENV APP_NAME="phase02" \
+	TZ='US/Eastern' \
+	PROGRAMS="opt"
+
+#===========================#
+# CentOS Preparation    	#
+#===========================#
+
+RUN yum groupinstall -y "Development Tools" && yum install -y \
+		wget \
+		tar \
+		gcc \
+		gcc-c++ \
+		openssl-devel \
+		zip \
+		unzip \
+		make \
+		cmake \
+		which \
+		readline-devel \
+		libX11-devel \
+		libXt-devel \
+		cairo-devel \
+		libjpeg-devel \
+		pango-devel \
+		dejavu* \
+		iptables-services \
+		systemctl \
+		curl \
+		&& yum -y clean all
+#===========================#
+# Pipeline Configuration   	#
+#===========================#
+
+WORKDIR /${PROGRAMS}/
+COPY pipeline_tools/ /${PROGRAMS}/
+COPY opt /${PROGRAMS}/
+
+#===========================#
+# Install ZLIB				#
+#===========================#
+
+ENV ZLIB_VERSION 1.2.11
+RUN tar zxf zlib-${ZLIB_VERSION}.tar.gz \
+	&& rm zlib-${ZLIB_VERSION}.tar.gz \
+	&& cd zlib-${ZLIB_VERSION} \
+	&& ./configure --prefix=/${PROGRAMS}/zlib-${ZLIB_VERSION} \
+	&& make
+
+#===========================#
+# Install R	and R PACKAGES	#
+#===========================#
+
+ENV R_VERSION 3.2.2
+ENV R_HOME /usr/local/lib64/R
+ENV r_dir /${PROGRAMS}/R-${R_VERSION}/bin
+ENV PATH /usr/local/bin/:${PATH}
+ENV LD_LIBRARY_PATH=${R_HOME}/lib:${LD_LIBRARY_PATH}
+RUN wget http://cran.r-project.org/src/base/R-3/R-${R_VERSION}.tar.gz \
+	&& tar xvfz R-${R_VERSION}.tar.gz \
+	&& rm R-${R_VERSION}.tar.gz \
+	&& cd /${PROGRAMS}/R-${R_VERSION} \
+	&& ./configure --enable-R-shlib \
+	&& make \
+	&& make install \
+	&& Rscript /$PROGRAMS/install_packages.R
+
+#===========================#
+# Install PYTHON			# #More pip installations according to transform.py
+#===========================#
+
+ENV PYTHON_VERSION 2.7.13
+ENV PATH /${PROGRAMS}/Python-${PYTHON_VERSION}:${PATH}
+ENV PYTHONPATH /${PROGRAMS}/Python-${PYTHON_VERSION}/Lib/
+
+ENV XLRD_VERSION 1.1.0
+ENV XLSXWRITER_VERSION 0.9.8
+ENV XLWT_VERSION 1.3.0
+ENV REQUESTS_VERSION 2.18.4
+
+RUN tar xzf Python-${PYTHON_VERSION}.tgz \
+	&& cd Python-${PYTHON_VERSION} \
+	&& ./configure \
+	&& make \
+	&& make install
+
+RUN python -m ensurepip --default-pip \
+	&& pip install xlrd==${XLRD_VERSION} \
+	&& pip install xlsxwriter==${XLSXWRITER_VERSION} \
+	&& pip install xlwt==${XLWT_VERSION} \
+	&& pip install requests==${REQUESTS_VERSION} \
+	&& pip install xlutils
+
+#===========================#
+# Install SAMTOOLS & HTSLIB #
+#===========================#
+
+ENV SAMTOOLS_VERSION 1.2
+ENV HTSLIB_VERSION 1.2.1
+ENV samtools_dir /${PROGRAMS}/samtools-${SAMTOOLS_VERSION}
+ENV htslib_dir ${samtools_dir}/htslib-${HTSLIB_VERSION}
+RUN wget -O samtools-${SAMTOOLS_VERSION}.tar.bz2 https://github.com/samtools/samtools/releases/download/${SAMTOOLS_VERSION}/samtools-${SAMTOOLS_VERSION}.tar.bz2 \
+	&& tar jxf samtools-${SAMTOOLS_VERSION}.tar.bz2 \
+	&& rm samtools-${SAMTOOLS_VERSION}.tar.bz2 \
+	&& cd samtools-${SAMTOOLS_VERSION} \
+	&& make \
+	&& cd htslib-${HTSLIB_VERSION} \
+	&& make
+
+#===========================#
+# Install BCFTOOLS			#
+#===========================#
+
+ENV BCFTOOLS_VERSION 1.2
+ENV bcftools_dir /${PROGRAMS}/bcftools-${BCFTOOLS_VERSION}
+RUN wget -O bcftools-${BCFTOOLS_VERSION}.tar.bz2 https://github.com/samtools/bcftools/releases/download/${BCFTOOLS_VERSION}/bcftools-${BCFTOOLS_VERSION}.tar.bz2 \
+	&& tar jxf bcftools-${BCFTOOLS_VERSION}.tar.bz2 \
+	&& rm bcftools-${BCFTOOLS_VERSION}.tar.bz2 \
+	&& cd bcftools-${BCFTOOLS_VERSION} \
+	&& make
+
+#===========================#
+# Install VCFTOOLS			#
+#===========================#
+
+ENV VCFTOOLS_VERSION 0.1.13
+ENV vcftools_dir /${PROGRAMS}/vcftools_${VCFTOOLS_VERSION}/bin/
+RUN tar zxf vcftools_${VCFTOOLS_VERSION}.tar.gz \
+	&& rm vcftools_${VCFTOOLS_VERSION}.tar.gz \
+	&& cd vcftools_${VCFTOOLS_VERSION} \
+	&& make
+
+#=======================#
+# JAVA 1.8.0_172		#
+#=======================#
+
+ENV JAVA_VERSION 8.0_172
+ENV JAVA_TARBALL jdk-8u172-linux-x64.tar.gz
+ENV JAVA_HOME /opt/jdk${JAVA_VERSION}
+ENV JRE_HOME /opt/jdk${JAVA_VERSION}/jre
+ENV JAVA_HOME /opt/jdk1.8.0_172
+ENV JRE_HOME /opt/jdk1.8.0_172/jre
+ENV PATH $PATH:${JAVA_HOME}/bin:${JRE_HOME}/bin
+RUN tar xzf ${JAVA_TARBALL} \
+	&& rm ${JAVA_TARBALL} \
+	&& $r_dir/R CMD javareconf \
+	&& $r_dir/R CMD INSTALL /${PROGRAMS}/rJava_0.9-9.tar.gz \
+	&& rm /${PROGRAMS}/rJava_0.9-9.tar.gz
+
+#===========================#
+# Install SNPEFF			#
+#===========================#
+ENV SNPEFF_VERSION 4_1l
+ENV SNPEFF_DB_VERSION snpEff_v4_1_GRCh37.75
+ENV snpeff_dir /${PROGRAMS}/snpEff
+RUN wget -O ${SNPEFF_DB_VERSION}.zip https://sourceforge.net/projects/snpeff/files/databases/v4_1/${SNPEFF_DB_VERSION}.zip/download \
+	&& wget -O snpEff_v${SNPEFF_VERSION}_core.zip http://sourceforge.net/projects/snpeff/files/snpEff_v${SNPEFF_VERSION}_core.zip/download \
+	&& unzip snpEff_v${SNPEFF_VERSION}_core.zip \
+	&& rm snpEff_v${SNPEFF_VERSION}_core.zip \
+	&& cd ${snpeff_dir} \
+	&& unzip /${PROGRAMS}/${SNPEFF_DB_VERSION}.zip \
+	&& rm /${PROGRAMS}/${SNPEFF_DB_VERSION}.zip
+
+RUN useradd -ms /bin/bash oncomineuser \
+	&& useradd -ms /bin/bash oncomine_d -G oncomineuser \
+	&& useradd -ms /bin/bash oncomine_s -G oncomineuser \
+	&& useradd -ms /bin/bash oncomine_p -G oncomineuser
+
+#Finally, chgrp permissions for oncomineuser group
+RUN chgrp -R oncomineuser /opt \
+	&& chmod -R 775 /opt
+
+#===================================#
+# Set working directory             #
+#===================================#
+
+WORKDIR /${APP_NAME}

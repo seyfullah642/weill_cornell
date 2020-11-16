@@ -1,0 +1,1632 @@
+---
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+# RCC analysis
+
+95 samples in total
+
+```{r echo=FALSE}
+
+library(ggplot2)
+library(ggrepel)
+
+load(file = "rcc_data/r-objects/treatment_groups.Rda")
+treatment.groups = as.data.frame(treatment.groups, stringsAsFactors = FALSE)
+
+maf = read.delim("rcc_data/mafs/eipm_rcc.clonet_corrected.one_sample_per_patient.maf", header = TRUE, sep = "\t")
+
+any.treatment = subset(treatment.groups, Any.Treatment == "Yes")
+no.treatment = subset(treatment.groups, Any.Treatment == "No")
+
+vegf.treatment = subset(treatment.groups, VEGF == "Yes")
+vegf.no.treatment = subset(treatment.groups, VEGF == "No")
+
+ici.treatment = subset(treatment.groups, Immunotherapy == "Yes")
+ici.no.treatment = subset(treatment.groups, Immunotherapy == "No")
+
+
+```
+
+## Any treatment vs No treatment
+
+Sample Overview
+
+* 45 samples with any treatment (samples collected after treatment)
+* 50 samples with no treatment (sample was collected before treatment)
+* Genes labeled at a p-value of < 0.05
+
+##### Raw p-value (fisher test)
+
+```{r echo=FALSE}
+
+any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  any.df = rbind(any.df, as.data.frame(tmp))
+  
+}
+
+any.genes = unique(as.data.frame(any.df$Hugo_Symbol))
+colnames(any.genes)[1] = "Gene"
+any.genes$any.Count = 0
+any.genes$any.Num.of.Samples = 0
+
+for(i in 1:nrow(any.genes)){
+  
+  sampleID = subset(any.df, toString(any.genes$Gene[i]) == any.df$Hugo_Symbol)
+  
+  any.genes$any.Count[i] = length(sampleID$Hugo_Symbol)
+  any.genes$any.Num.of.Samples[i] = length(unique(sampleID$Tumor_Sample_Barcode))
+}
+
+any.genes = any.genes[order(-any.genes$any.Count),]
+any.genes$any.WO.Num.of.Samples = (nrow(any.treatment) - as.integer(any.genes$any.Num.of.Samples))
+
+no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  no.df = rbind(no.df, as.data.frame(tmp))
+  
+}
+
+no.genes = unique(as.data.frame(no.df$Hugo_Symbol))
+colnames(no.genes)[1] = "Gene"
+no.genes$no.Count = 0
+no.genes$no.Num.of.Samples = 0
+
+for(i in 1:nrow(no.genes)){
+  
+  sampleID = subset(no.df, toString(no.genes$Gene[i]) == no.df$Hugo_Symbol)
+  
+  no.genes$no.Count[i] = length(sampleID$Hugo_Symbol)
+  no.genes$no.Num.of.Samples[i] = length(unique(sampleID$Tumor_Sample_Barcode))
+}
+
+no.genes = no.genes[order(-no.genes$no.Count),]
+no.genes$no.WO.Num.of.Samples = (nrow(no.treatment) - as.integer(no.genes$no.Num.of.Samples))
+
+any.merged_data = merge(no.genes, any.genes, by = "Gene", all = TRUE)
+any.merged_data[is.na(any.merged_data)] = 0
+
+any.merged_data$any.WO.Num.of.Samples = ifelse(any.merged_data$any.WO.Num.of.Samples == 0 & any.merged_data$any.Num.of.Samples == 0, nrow(any.treatment), any.merged_data$any.WO.Num.of.Samples)
+any.merged_data$no.WO.Num.of.Samples = ifelse(any.merged_data$no.WO.Num.of.Samples == 0 & any.merged_data$no.Num.of.Samples == 0, nrow(no.treatment), any.merged_data$no.WO.Num.of.Samples)
+
+any.merged_data$pvalue = 0
+any.merged_data$odds.ratio = 0
+
+for(i in 1:nrow(any.merged_data)){
+
+  mat = matrix(c(as.integer(any.merged_data$any.Num.of.Samples[i]) , as.integer(any.merged_data$any.WO.Num.of.Samples[i]),
+                 as.integer(any.merged_data$no.Num.of.Samples[i]), as.integer(any.merged_data$no.WO.Num.of.Samples[i])), 2)
+
+  fet = fisher.test(mat)
+
+  any.merged_data$pvalue[i] = fet$p.value
+  any.merged_data$odds.ratio[i] = fet$estimate
+
+}
+
+any.merged_data$odds.ratio.log2 = log2(any.merged_data$odds.ratio)
+any.merged_data$pvalue.log10 = -10 * log10(any.merged_data$pvalue)
+
+any.genes.list = subset(any.merged_data, any.merged_data$odds.ratio.log2 != Inf & any.merged_data$odds.ratio.log2 != -Inf)
+
+ggplot(any.genes.list, aes(x = odds.ratio.log2, y = pvalue.log10)) +
+  geom_point(aes(col = pvalue < 0.05)) + #aes(col = pvalue < 0.05)
+  xlim(c(-6,6)) + ylim(c(-1,25)) +
+  xlab("Log2(Odds Ratio)") + ylab("-10*Log10(p value)") +
+  scale_color_manual(labels = c("Not significant", "Significant "), values=c("black", "red")) +
+  geom_text_repel(data=subset(any.genes.list, pvalue<0.05), aes(label=Gene)) +
+  geom_hline(yintercept=(-10*log10(0.05)), color = "black", size=0.5) +
+  ggtitle("          No Treatment                                 Any Treatment") 
+
+
+adjusted.any.pvalue = p.adjust(any.genes.list$pvalue, method = "BH", nrow(any.genes.list))
+
+any.genes.list$BH = adjusted.any.pvalue
+
+any.genes.list$BH.log10 = -10 * log10(any.genes.list$BH)
+
+```
+
+##### Adjusted p-value (Benjamini Hochberg)
+
+```{r echo=FALSE}
+
+ggplot(any.genes.list, aes(x = odds.ratio.log2, y = BH.log10)) +
+  geom_point(aes(col = BH < 0.05)) + #aes(col = pvalue < 0.05)
+  xlim(c(-6,6)) + ylim(c(-1,25)) +
+  xlab("Log2(Odds Ratio)") + ylab("-10*Log10(BH)") +
+  scale_color_manual(labels = c("Not significant", "Significant "), values=c("black", "red")) +
+  geom_text_repel(data=subset(any.genes.list, BH<0.05), aes(label=Gene)) +
+  geom_hline(yintercept=(-10*log10(0.05)), color = "black", size=0.5) +
+  ggtitle("          No Treatment                                 Any Treatment")
+
+```
+
+
+## VEGF treatment vs No VEGF treatment
+
+Sample Overview
+
+* 33 samples with VEGF treatment (samples collected after treatment)
+* 62 samples with no VEGF treatment (sample was collected before treatment)
+* Genes labeled at a p-value of < 0.01
+
+##### Raw p-value (fisher test)
+
+```{r echo=FALSE}
+
+vegf.df = as.data.frame(NULL)
+
+for(i in 1:nrow(vegf.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(vegf.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  vegf.df = rbind(vegf.df, as.data.frame(tmp))
+  
+}
+
+vegf.genes = unique(as.data.frame(vegf.df$Hugo_Symbol))
+colnames(vegf.genes)[1] = "Gene"
+vegf.genes$vegf.Count = 0
+vegf.genes$vegf.Num.of.Samples = 0
+
+for(i in 1:nrow(vegf.genes)){
+  
+  sampleID = subset(vegf.df, toString(vegf.genes$Gene[i]) == vegf.df$Hugo_Symbol)
+  
+  vegf.genes$vegf.Count[i] = length(sampleID$Hugo_Symbol)
+  vegf.genes$vegf.Num.of.Samples[i] = length(unique(sampleID$Tumor_Sample_Barcode))
+}
+
+vegf.genes = vegf.genes[order(-vegf.genes$vegf.Count),]
+vegf.genes$vegf.WO.Num.of.Samples = (nrow(vegf.treatment) - as.integer(vegf.genes$vegf.Num.of.Samples))
+
+vegf.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(vegf.no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(vegf.no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  vegf.no.df = rbind(vegf.no.df, as.data.frame(tmp))
+  
+}
+
+vegf.no.genes = unique(as.data.frame(vegf.no.df$Hugo_Symbol))
+colnames(vegf.no.genes)[1] = "Gene"
+vegf.no.genes$no.Count = 0
+vegf.no.genes$no.Num.of.Samples = 0
+
+for(i in 1:nrow(vegf.no.genes)){
+  
+  sampleID = subset(vegf.no.df, toString(vegf.no.genes$Gene[i]) == vegf.no.df$Hugo_Symbol)
+  
+  vegf.no.genes$no.Count[i] = length(sampleID$Hugo_Symbol)
+  vegf.no.genes$no.Num.of.Samples[i] = length(unique(sampleID$Tumor_Sample_Barcode))
+}
+
+vegf.no.genes = vegf.no.genes[order(-vegf.no.genes$no.Count),]
+vegf.no.genes$no.WO.Num.of.Samples = (nrow(vegf.no.treatment) - as.integer(vegf.no.genes$no.Num.of.Samples))
+
+vegf.merged_data = merge(vegf.no.genes, vegf.genes, by = "Gene", all = TRUE)
+vegf.merged_data[is.na(vegf.merged_data)] = 0
+
+vegf.merged_data$vegf.WO.Num.of.Samples = ifelse(vegf.merged_data$vegf.WO.Num.of.Samples == 0 & vegf.merged_data$vegf.Num.of.Samples == 0, nrow(vegf.treatment), vegf.merged_data$vegf.WO.Num.of.Samples)
+vegf.merged_data$no.WO.Num.of.Samples = ifelse(vegf.merged_data$no.WO.Num.of.Samples == 0 & vegf.merged_data$no.Num.of.Samples == 0, nrow(vegf.no.treatment), vegf.merged_data$no.WO.Num.of.Samples)
+
+vegf.merged_data$pvalue = 0
+vegf.merged_data$odds.ratio = 0
+
+for(i in 1:nrow(vegf.merged_data)){
+
+  mat = matrix(c(as.integer(vegf.merged_data$vegf.Num.of.Samples[i]) , as.integer(vegf.merged_data$vegf.WO.Num.of.Samples[i]),
+                 as.integer(vegf.merged_data$no.Num.of.Samples[i]), as.integer(vegf.merged_data$no.WO.Num.of.Samples[i])), 2)
+
+  fet = fisher.test(mat)
+
+  vegf.merged_data$pvalue[i] = fet$p.value
+  vegf.merged_data$odds.ratio[i] = fet$estimate
+
+}
+
+vegf.merged_data$odds.ratio.log2 = log2(vegf.merged_data$odds.ratio)
+vegf.merged_data$pvalue.log10 = -10 * log10(vegf.merged_data$pvalue)
+
+vegf.genes.list = subset(vegf.merged_data, vegf.merged_data$odds.ratio.log2 != Inf & vegf.merged_data$odds.ratio.log2 != -Inf)
+
+ggplot(vegf.genes.list, aes(x = odds.ratio.log2, y = pvalue.log10)) +
+  geom_point(aes(col = pvalue < 0.05)) + #aes(col = pvalue < 0.05)
+  xlim(c(-10,10)) + ylim(c(-1,40)) +
+  xlab("Log2(Odds Ratio)") + ylab("-10*Log10(p value)") +
+  scale_color_manual(labels = c("Not significant", "Significant "), values=c("black", "red")) +
+  geom_text_repel(data=subset(vegf.genes.list, pvalue<0.01), aes(label=Gene)) +
+  geom_hline(yintercept=(-10*log10(0.05)), color = "black", size=0.5) +
+  ggtitle("          No VEGF Treatment                          VEGF Treatment")
+
+
+adjusted.vegf.pvalue = p.adjust(vegf.genes.list$pvalue, method = "BH", nrow(vegf.genes.list))
+
+vegf.genes.list$BH = adjusted.vegf.pvalue
+
+vegf.genes.list$BH.log10 = -10 * log10(vegf.genes.list$BH)
+
+#p.adjust(vegf.genes.list$pvalue, method = "BH", nrow(vegf.genes.list))
+```
+
+##### Adjusted p-value (Benjamini Hochberg)
+
+```{r echo=FALSE}
+
+ggplot(vegf.genes.list, aes(x = odds.ratio.log2, y = BH.log10)) +
+  geom_point(aes(col = BH < 0.05)) + #aes(col = pvalue < 0.05)
+  xlim(c(-10,10)) + ylim(c(-1,40)) +
+  xlab("Log2(Odds Ratio)") + ylab("-10*Log10(BH)") +
+  scale_color_manual(labels = c("Not significant", "Significant "), values=c("black", "red")) +
+  geom_text_repel(data=subset(vegf.genes.list, BH<0.05), aes(label=Gene)) +
+  geom_hline(yintercept=(-10*log10(0.05)), color = "black", size=0.5) +
+  ggtitle("          No VEGF Treatment                          VEGF Treatment")
+
+```
+
+
+## ICI vs No ICI treatment
+
+Sample Overview
+
+* 4 samples with ICI treatment (samples collected after treatment)
+* 91 samples with no ICI treatment (sample was collected before treatment)
+* Genes labeled at a p-value of < 0.001
+
+##### Raw p-value (fisher test)
+
+```{r echo=FALSE}
+
+ici.df = as.data.frame(NULL)
+
+for(i in 1:nrow(ici.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(ici.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  ici.df = rbind(ici.df, as.data.frame(tmp))
+  
+}
+
+ici.genes = unique(as.data.frame(ici.df$Hugo_Symbol))
+colnames(ici.genes)[1] = "Gene"
+ici.genes$ici.Count = 0
+ici.genes$ici.Num.of.Samples = 0
+
+for(i in 1:nrow(ici.genes)){
+  
+  sampleID = subset(ici.df, toString(ici.genes$Gene[i]) == ici.df$Hugo_Symbol)
+  
+  ici.genes$ici.Count[i] = length(sampleID$Hugo_Symbol)
+  ici.genes$ici.Num.of.Samples[i] = length(unique(sampleID$Tumor_Sample_Barcode))
+}
+
+ici.genes = ici.genes[order(-ici.genes$ici.Count),]
+ici.genes$ici.WO.Num.of.Samples = (nrow(ici.treatment) - as.integer(ici.genes$ici.Num.of.Samples))
+
+ici.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(ici.no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(ici.no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  ici.no.df = rbind(ici.no.df, as.data.frame(tmp))
+  
+}
+
+ici.no.genes = unique(as.data.frame(ici.no.df$Hugo_Symbol))
+colnames(ici.no.genes)[1] = "Gene"
+ici.no.genes$no.Count = 0
+ici.no.genes$no.Num.of.Samples = 0
+
+for(i in 1:nrow(ici.no.genes)){
+  
+  sampleID = subset(ici.no.df, toString(ici.no.genes$Gene[i]) == ici.no.df$Hugo_Symbol)
+  
+  ici.no.genes$no.Count[i] = length(sampleID$Hugo_Symbol)
+  ici.no.genes$no.Num.of.Samples[i] = length(unique(sampleID$Tumor_Sample_Barcode))
+}
+
+ici.no.genes = ici.no.genes[order(-ici.no.genes$no.Count),]
+ici.no.genes$no.WO.Num.of.Samples = (nrow(ici.no.treatment) - as.integer(ici.no.genes$no.Num.of.Samples))
+
+ici.merged_data = merge(ici.no.genes, ici.genes, by = "Gene", all = TRUE)
+ici.merged_data[is.na(ici.merged_data)] = 0
+
+ici.merged_data$ici.WO.Num.of.Samples = ifelse(ici.merged_data$ici.WO.Num.of.Samples == 0 & ici.merged_data$ici.Num.of.Samples == 0, nrow(ici.treatment), ici.merged_data$ici.WO.Num.of.Samples)
+ici.merged_data$no.WO.Num.of.Samples = ifelse(ici.merged_data$no.WO.Num.of.Samples == 0 & ici.merged_data$no.Num.of.Samples == 0, nrow(ici.no.treatment), ici.merged_data$no.WO.Num.of.Samples)
+
+ici.merged_data$pvalue = 0
+ici.merged_data$odds.ratio = 0
+
+for(i in 1:nrow(ici.merged_data)){
+
+  mat = matrix(c(as.integer(ici.merged_data$ici.Num.of.Samples[i]) , as.integer(ici.merged_data$ici.WO.Num.of.Samples[i]),
+                 as.integer(ici.merged_data$no.Num.of.Samples[i]), as.integer(ici.merged_data$no.WO.Num.of.Samples[i])), 2)
+
+  fet = fisher.test(mat)
+
+  ici.merged_data$pvalue[i] = fet$p.value
+  ici.merged_data$odds.ratio[i] = fet$estimate
+
+}
+
+ici.merged_data$odds.ratio.log2 = log2(ici.merged_data$odds.ratio)
+ici.merged_data$pvalue.log10 = -10 * log10(ici.merged_data$pvalue)
+
+ici.genes.list = subset(ici.merged_data, ici.merged_data$odds.ratio.log2 != Inf & ici.merged_data$odds.ratio.log2 != -Inf)
+
+ggplot(ici.genes.list, aes(x = odds.ratio.log2, y = pvalue.log10)) +
+  geom_point(aes(col = pvalue < 0.05)) + #aes(col = pvalue < 0.05)
+  xlim(c(-20,20)) + ylim(c(-5,50)) +
+  xlab("Log2(Odds Ratio)") + ylab("-10*Log10(p value)") +
+  scale_color_manual(labels = c("Not significant", "Significant "), values=c("black", "red")) +
+  geom_text_repel(data=subset(ici.genes.list, pvalue<0.001), aes(label=Gene)) +
+  geom_hline(yintercept=(-10*log10(0.05)), color = "black", size=0.5) +
+  ggtitle("          No ICI Treatment                                 ICI Treatment")
+
+adjusted.ici.pvalue = p.adjust(ici.genes.list$pvalue, method = "BH", nrow(ici.genes.list))
+
+ici.genes.list$BH = adjusted.ici.pvalue
+
+ici.genes.list$BH.log10 = -10 * log10(ici.genes.list$BH)
+
+```
+
+##### Adjusted p-value (Benjamini Hochberg)
+
+```{r echo=FALSE}
+
+ggplot(ici.genes.list, aes(x = odds.ratio.log2, y = BH.log10)) +
+  geom_point(aes(col = BH < 0.05)) + #aes(col = pvalue < 0.05)
+  xlim(c(-20,20)) + ylim(c(-5,50)) +
+  xlab("Log2(Odds Ratio)") + ylab("-10*Log10(BH)") +
+  scale_color_manual(labels = c("Not significant", "Significant "), values=c("black", "red")) +
+  geom_text_repel(data=subset(ici.genes.list, BH<0.05), aes(label=Gene)) +
+  geom_hline(yintercept=(-10*log10(0.05)), color = "black", size=0.5) +
+  ggtitle("          No ICI Treatment                                 ICI Treatment")
+
+```
+
+
+## Gene analysis {.tabset .tabset-fade .tabset-pills}
+
+### SETD2
+
+```{r SETD2, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "SETD2")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "SETD2")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="SETD2 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### PBRM1
+
+```{r PBRM1, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "PBRM1")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "PBRM1")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="PBRM1 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### APC
+
+```{r APC, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "APC")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "APC")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="APC vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### VHL
+
+```{r VHL, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "VHL")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "VHL")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="VHL vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### KDM5C
+
+```{r KDM5C, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "KDM5C")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "KDM5C")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="KDM5C vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### CDKN2A
+
+```{r CDKN2A, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "CDKN2A")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "CDKN2A")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="CDKN2A vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### FBXW7
+
+```{r FBXW7, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "FBXW7")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "FBXW7")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="FBXW7 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### HIF1A
+
+```{r HIF1A, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "HIF1A")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "HIF1A")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="HIF1A vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### RBM10
+
+```{r RBM10, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "RBM10")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "RBM10")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="RBM10 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### TYRO3
+
+```{r TYRO3, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "TYRO3")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "TYRO3")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="TYRO3 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### PTEN
+
+```{r PTEN, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "PTEN")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "PTEN")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="PTEN vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### TRAK1
+
+```{r TRAK1, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "TRAK1")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "TRAK1")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="TRAK1 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### TSC1
+
+```{r TSC1, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "TSC1")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "TSC1")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="TSC1 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### BAP1
+
+```{r BAP1, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "BAP1")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "BAP1")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="BAP1 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### TP53
+
+```{r TP53, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+  
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "TP53")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+  
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+  
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+  
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "TP53")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) + 
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="TP53 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### TGFBR2
+
+```{r TGFBR2, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "TGFBR2")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "TGFBR2")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# error = tryCatch(
+#   {
+#     gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+#     print("P-value from t-test:")
+#     print(gene.t.test$p.value)
+#   },
+#   error = function(e){
+#     print("Not enough observations to run t-test")
+#   }
+# )
+# 
+# #print(error)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) + 
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="TGFBR2 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+# 
+```
+
+### EGFR
+ 
+```{r EGFR, echo=FALSE}
+
+gene.any.df = as.data.frame(NULL)
+
+for(i in 1:nrow(any.treatment)){
+
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+
+  gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+
+}
+
+gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "EGFR")
+
+gene.no.df = as.data.frame(NULL)
+
+for(i in 1:nrow(no.treatment)){
+
+  tmp = as.data.frame(NULL)
+  tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+
+  gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+
+}
+
+gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "EGFR")
+
+gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+
+
+gene.any$treatment = "post-treatment"
+gene.no$treatment = "pre-treatment"
+
+gene.merged = rbind(gene.any, gene.no)
+gene.merged$treatment = as.factor(gene.merged$treatment)
+
+gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+
+print("P-value from t-test:")
+print(gene.t.test$p.value)
+
+ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+  geom_boxplot(aes(color=treatment)) +
+  geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+  labs(title="EGFR vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### SQSTM1
+
+```{r SQSTM1, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "SQSTM1")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "SQSTM1")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+# 
+# print("P-value from t-test:")
+# print(gene.t.test$p.value)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) + 
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="SQSTM1 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### CDKN1A
+
+```{r CDKN1A, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "CDKN1A")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "CDKN1A")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+# 
+# print("P-value from t-test:")
+# print(gene.t.test$p.value)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) + 
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="CDKN1A vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### IDH1
+
+```{r IDH1, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "IDH1")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "IDH1")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+# 
+# print("P-value from t-test:")
+# print(gene.t.test$p.value)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) + 
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="IDH1 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+# 
+```
+
+### TMEM121
+
+```{r TMEM121, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+# 
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+# 
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+# 
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "TMEM121")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+# 
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+# 
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+# 
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "TMEM121")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+# 
+# print("P-value from t-test:")
+# print(gene.t.test$p.value)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) +
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="TMEM121 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
+### BRAF
+
+```{r BRAF, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "BRAF")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+#   
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+#   
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+#   
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "BRAF")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+# 
+# print("P-value from t-test:")
+# print(gene.t.test$p.value)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) + 
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="BRAF vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+# 
+```
+
+### RPL17
+
+```{r RPL17, echo=FALSE}
+
+print("Not enough observations")
+
+# gene.any.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(any.treatment)){
+# 
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(any.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+# 
+#   gene.any.df = rbind(gene.any.df, as.data.frame(tmp))
+# 
+# }
+# 
+# gene.any = subset(gene.any.df, as.character(gene.any.df$Hugo_Symbol) == "RPL17")
+# 
+# gene.no.df = as.data.frame(NULL)
+# 
+# for(i in 1:nrow(no.treatment)){
+# 
+#   tmp = as.data.frame(NULL)
+#   tmp = maf[grep(as.name(no.treatment$sample.ID[i]),maf$Tumor_Sample_Barcode),]
+# 
+#   gene.no.df = rbind(gene.no.df, as.data.frame(tmp))
+# 
+# }
+# 
+# gene.no = subset(gene.no.df, as.character(gene.no.df$Hugo_Symbol) == "RPL17")
+# 
+# gene.any$vaf = 100 * (gene.any$t_alt_count/(gene.any$t_alt_count+gene.any$t_ref_count))
+# gene.no$vaf = 100 * (gene.no$t_alt_count/(gene.no$t_alt_count+gene.no$t_ref_count))
+# 
+# 
+# gene.any$treatment = "post-treatment"
+# gene.no$treatment = "pre-treatment"
+# 
+# gene.merged = rbind(gene.any, gene.no)
+# gene.merged$treatment = as.factor(gene.merged$treatment)
+# 
+# gene.t.test = t.test(gene.any$vaf, gene.no$vaf)
+# 
+# print("P-value from t-test:")
+# print(gene.t.test$p.value)
+# 
+# ggplot(gene.merged, aes(x=treatment, y=vaf)) +
+#   geom_boxplot(aes(color=treatment)) +
+#   geom_dotplot(binaxis='y', stackdir='center', dotsize=1, binwidth=2) +
+#   labs(title="RPL17 vaf comparison of pre and post treated samples",x="Treatment", y = "VAF")
+
+```
+
